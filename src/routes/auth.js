@@ -52,7 +52,7 @@ router.get('/google/callback',
     );
 
     // redirect ไป frontend พร้อม token
-    res.redirect(`http://localhost:3001?token=${token}`);
+    res.redirect(`http://localhost:5173?token=${token}`);
   }
 );
 

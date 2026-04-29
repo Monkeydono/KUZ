@@ -1,17 +1,39 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Login from './pages/login'
 import Book from './pages/book'
 import MyBookings from './pages/my-bookings'
 
-function App() {
-  const token = localStorage.getItem('token')
+function TokenHandler() {
+  const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
 
+  useEffect(() => {
+    const token = searchParams.get('token')
+    if (token) {
+      localStorage.setItem('token', token)
+      navigate('/book', { replace: true })
+    } else {
+      navigate('/login', { replace: true })
+    }
+  }, [])
+
+  return null
+}
+
+function PrivateRoute({ children }) {
+  const token = localStorage.getItem('token')
+  return token ? children : <Navigate to="/login" replace />
+}
+
+function App() {
   return (
     <Routes>
+      <Route path="/" element={<TokenHandler />} />
       <Route path="/login" element={<Login />} />
-      <Route path="/book" element={token ? <Book /> : <Navigate to="/login" />} />
-      <Route path="/my-bookings" element={token ? <MyBookings /> : <Navigate to="/login" />} />
-      <Route path="/" element={<Navigate to={token ? "/book" : "/login"} />} />
+      <Route path="/book" element={<PrivateRoute><Book /></PrivateRoute>} />
+      <Route path="/my-bookings" element={<PrivateRoute><MyBookings /></PrivateRoute>} />
     </Routes>
   )
 }

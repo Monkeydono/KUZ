@@ -1,4 +1,4 @@
- import { useEffect } from 'react'
+import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 function Login() {
@@ -7,6 +7,8 @@ function Login() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const token = params.get('token')
+    console.log('URL:', window.location.href)
+    console.log('Token:', token)
     if (token) {
       localStorage.setItem('token', token)
       navigate('/book')
