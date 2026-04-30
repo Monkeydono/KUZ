@@ -52,7 +52,8 @@ router.get('/google/callback',
     );
 
     // redirect ไป frontend พร้อม token
-    res.redirect(`http://localhost:5173?token=${token}`);
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    res.redirect(`${frontendUrl}?token=${token}`);
   }
 );
 

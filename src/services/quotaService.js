@@ -19,21 +19,24 @@ async function getOrCreateQuota(userId) {
   return result.rows[0];
 }
 
-// ตรวจและใช้ quota — return true ถ้ายังมีสิทธิ์
+// ตรวจและใช้ quota — atomic เพื่อกัน race condition
 async function checkAndUseQuota(userId) {
-  const quota = await getOrCreateQuota(userId);
+  await getOrCreateQuota(userId);
 
-  if (quota.used_count >= quota.max_count) {
-    return false;
-  }
+  const month = new Date();
+  month.setDate(1);
+  month.setHours(0, 0, 0, 0);
+  const monthStr = month.toISOString().split('T')[0];
 
-  await pool.query(
+  // increment เฉพาะเมื่อยังไม่เต็ม — ทำใน statement เดียว ไม่มี TOCTOU
+  const result = await pool.query(
     `UPDATE quota SET used_count = used_count + 1, updated_at = NOW()
-     WHERE user_id = $1 AND month = $2`,
-    [userId, quota.month]
+     WHERE user_id = $1 AND month = $2 AND used_count < max_count
+     RETURNING id`,
+    [userId, monthStr]
   );
 
-  return true;
+  return result.rowCount > 0;
 }
 
 // คืน quota เมื่อยกเลิกการจอง

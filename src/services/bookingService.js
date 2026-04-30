@@ -17,8 +17,34 @@ async function checkConflict(startTime, endTime, excludeId = null) {
 
 // สร้างการจองใหม่
 async function createBooking({ userId, title, startTime, endTime }) {
-  // 1. ตรวจ duration ไม่เกิน 40 นาที
-  const duration = (new Date(endTime) - new Date(startTime)) / 60000;
+  // 1. validate input
+  if (!title || typeof title !== 'string' || title.trim().length === 0) {
+    throw { status: 400, message: 'กรุณาระบุหัวข้อการประชุม' };
+  }
+  if (title.length > 200) {
+    throw { status: 400, message: 'หัวข้อยาวเกินไป (สูงสุด 200 ตัวอักษร)' };
+  }
+
+  const start = new Date(startTime);
+  const end   = new Date(endTime);
+  if (isNaN(start) || isNaN(end)) {
+    throw { status: 400, message: 'รูปแบบวันที่ไม่ถูกต้อง' };
+  }
+  if (end <= start) {
+    throw { status: 400, message: 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่ม' };
+  }
+
+  const now = new Date();
+  if (start < now) {
+    throw { status: 400, message: 'ไม่สามารถจองย้อนหลังได้' };
+  }
+
+  const sevenDays = 7 * 24 * 60 * 60 * 1000;
+  if (start - now > sevenDays) {
+    throw { status: 400, message: 'จองล่วงหน้าได้ไม่เกิน 7 วัน' };
+  }
+
+  const duration = (end - start) / 60000;
   if (duration > 40) {
     throw { status: 400, message: 'ไม่สามารถจองเกิน 40 นาทีได้ (Zoom free plan)' };
   }
@@ -76,10 +102,7 @@ async function cancelBooking(bookingId, userId) {
 
   const booking = result.rows[0];
 
-  // ลบ Zoom meeting
-  await zoomService.deleteMeeting(booking.zoom_meeting_id);
-
-  // อัปเดต status
+  // อัปเดต status ก่อน — ถ้า DB fail จะไม่ไปลบ Zoom (กัน zombie meeting)
   await pool.query(
     `UPDATE bookings SET status = 'cancelled' WHERE id = $1`,
     [bookingId]
@@ -87,6 +110,13 @@ async function cancelBooking(bookingId, userId) {
 
   // คืน quota
   await quotaService.returnQuota(userId);
+
+  // ลบ Zoom meeting — ถ้า fail แค่ log แต่ไม่ throw เพราะ booking cancel แล้ว
+  try {
+    await zoomService.deleteMeeting(booking.zoom_meeting_id);
+  } catch (err) {
+    console.error('Zoom delete failed for', booking.zoom_meeting_id, err.message);
+  }
 
   // แจ้ง email ยกเลิก
   await notificationService.sendCancellationNotification(booking);

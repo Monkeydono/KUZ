@@ -1,22 +1,26 @@
 const express = require('express');
 const passport = require('passport');
-const app = express();
 const cors = require('cors');
+const app = express();
 require('dotenv').config();
 
-// Middleware
+if (!process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET is not set in environment');
+}
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+app.use(cors({ origin: FRONTEND_URL, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(passport.initialize());
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 
-// Routes
 const authRoutes    = require('./routes/auth');
 const bookingRoutes = require('./routes/bookings');
 const adminRoutes   = require('./routes/admin');
 const authenticate  = require('./middleware/authenticate');
 
-app.use('/auth',               authRoutes);
+app.use('/auth', authRoutes);
 app.use('/bookings', authenticate, bookingRoutes);
 app.use('/admin',    authenticate, adminRoutes);
 
