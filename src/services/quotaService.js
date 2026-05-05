@@ -1,13 +1,14 @@
 const pool = require('../../config/db');
 
-// ดึง quota ของ user เดือนนี้ (สร้างใหม่ถ้ายังไม่มี)
-async function getOrCreateQuota(userId) {
-  const month = new Date();
-  month.setDate(1);
-  month.setHours(0, 0, 0, 0);
-  const monthStr = month.toISOString().split('T')[0];
+// แปลง Date เป็น "YYYY-MM-01" สำหรับ key ของเดือนนั้น
+function monthKey(date) {
+  const d = new Date(date);
+  d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString().split('T')[0];
+}
 
-  // upsert — สร้างถ้าไม่มี
+async function getOrCreateQuota(userId, monthStr = monthKey(new Date())) {
   const result = await pool.query(
     `INSERT INTO quota (user_id, month, used_count, max_count)
      VALUES ($1, $2, 0, 4)
@@ -15,20 +16,14 @@ async function getOrCreateQuota(userId) {
      RETURNING *`,
     [userId, monthStr]
   );
-
   return result.rows[0];
 }
 
-// ตรวจและใช้ quota — atomic เพื่อกัน race condition
-async function checkAndUseQuota(userId) {
-  await getOrCreateQuota(userId);
+// ตรวจและใช้ quota — atomic กัน race condition
+async function checkAndUseQuota(userId, bookingDate = new Date()) {
+  const monthStr = monthKey(bookingDate);
+  await getOrCreateQuota(userId, monthStr);
 
-  const month = new Date();
-  month.setDate(1);
-  month.setHours(0, 0, 0, 0);
-  const monthStr = month.toISOString().split('T')[0];
-
-  // increment เฉพาะเมื่อยังไม่เต็ม — ทำใน statement เดียว ไม่มี TOCTOU
   const result = await pool.query(
     `UPDATE quota SET used_count = used_count + 1, updated_at = NOW()
      WHERE user_id = $1 AND month = $2 AND used_count < max_count
@@ -39,12 +34,10 @@ async function checkAndUseQuota(userId) {
   return result.rowCount > 0;
 }
 
-// คืน quota เมื่อยกเลิกการจอง
-async function returnQuota(userId) {
-  const month = new Date();
-  month.setDate(1);
-  const monthStr = month.toISOString().split('T')[0];
-
+// คืน quota ของ "เดือนที่จอง" (ไม่ใช่เดือนปัจจุบัน)
+// เพื่อกัน bug: จอง ม.ค. แล้วยกเลิก ก.พ. ต้องคืนของ ม.ค.
+async function returnQuota(userId, bookingDate) {
+  const monthStr = monthKey(bookingDate);
   await pool.query(
     `UPDATE quota SET used_count = GREATEST(used_count - 1, 0), updated_at = NOW()
      WHERE user_id = $1 AND month = $2`,
@@ -52,7 +45,6 @@ async function returnQuota(userId) {
   );
 }
 
-// ดู quota ของ user
 async function getQuota(userId) {
   const quota = await getOrCreateQuota(userId);
   return {

@@ -1,16 +1,20 @@
+import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { X } from 'lucide-react'
+import KUEmblem from './KUEmblem'
 
 function Navbar() {
   const navigate = useNavigate()
   const location = useLocation()
-
-  const handleLogout = () => {
-    if (!confirm('ต้องการออกจากระบบใช่หรือไม่?')) return
-    localStorage.removeItem('token')
-    navigate('/login')
-  }
+  const [showLogout, setShowLogout] = useState(false)
 
   const isActive = (path) => location.pathname === path
+
+  const doLogout = () => {
+    localStorage.removeItem('token')
+    setShowLogout(false)
+    navigate('/login')
+  }
 
   const links = [
     { path: '/calendar',    label: 'ปฏิทิน' },
@@ -27,7 +31,7 @@ function Navbar() {
           onClick={() => navigate('/calendar')}
         >
           <div style={s.logoMark}>
-            <span style={s.logoText}>KU</span>
+            <KUEmblem size={42} variant="dark" />
           </div>
           <div style={s.brandWrap}>
             <span style={s.navBrand}>KU Zoom Booking</span>
@@ -51,10 +55,34 @@ function Navbar() {
             {isActive(link.path) && <div style={s.activeDot} />}
           </span>
         ))}
-        <span style={s.navBtn} className="ku-nav-btn" onClick={handleLogout}>
+        <span style={s.navBtn} className="ku-nav-btn" onClick={() => setShowLogout(true)}>
           ออกจากระบบ
         </span>
       </div>
+
+      {showLogout && (
+        <div style={s.overlay} onClick={() => setShowLogout(false)}>
+          <div style={s.modal} className="slide-in" onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>ยืนยันการออกจากระบบ</h3>
+              <button style={s.closeBtn} onClick={() => setShowLogout(false)} aria-label="ปิด">
+                <X size={18} />
+              </button>
+            </div>
+            <div style={s.modalBody}>
+              <p style={s.modalText}>ต้องการออกจากระบบใช่หรือไม่?</p>
+            </div>
+            <div style={s.modalFooter}>
+              <button style={s.cancelBtn} onClick={() => setShowLogout(false)}>
+                ยกเลิก
+              </button>
+              <button style={s.confirmBtn} onClick={doLogout}>
+                ออกจากระบบ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         .ku-logo { transition: transform 0.2s var(--ease); }
@@ -80,10 +108,10 @@ function Navbar() {
 
 const s = {
   nav: {
-    background: 'linear-gradient(90deg, #134d20 0%, #1b5e20 50%, #134d20 100%)',
+    background: 'linear-gradient(90deg, #028152 0%, #03A96B 50%, #028152 100%)',
     padding: '0 40px', height: 68,
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    boxShadow: '0 4px 20px rgba(13, 61, 24, 0.18)',
+    boxShadow: '0 4px 20px rgba(1, 74, 50, 0.18)',
     position: 'sticky', top: 0, zIndex: 50,
     borderBottom: '1px solid rgba(241, 216, 120, 0.2)',
   },
@@ -92,20 +120,15 @@ const s = {
     display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
   },
   logoMark: {
-    width: 38, height: 38, borderRadius: 10,
-    background: 'linear-gradient(135deg, #f1d878 0%, #c9a227 100%)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.4)',
-  },
-  logoText: {
-    fontSize: 14, fontWeight: 800, color: '#0d3d18', letterSpacing: -0.5,
+    flexShrink: 0,
   },
   brandWrap: { display: 'flex', flexDirection: 'column', lineHeight: 1.1 },
   navBrand: {
     color: 'white', fontWeight: 600, fontSize: 17, letterSpacing: '0.2px',
   },
   navSub: {
-    color: 'rgba(241, 216, 120, 0.85)', fontSize: 11, fontWeight: 400, marginTop: 2,
+    color: 'rgba(255, 255, 255, 0.7)', fontSize: 11, fontWeight: 400, marginTop: 2,
   },
   navLinks: { display: 'flex', alignItems: 'center', gap: 8 },
   navLink: {
@@ -129,6 +152,53 @@ const s = {
     background: 'rgba(255,255,255,0.12)', padding: '8px 18px',
     borderRadius: 20, border: '1px solid rgba(241, 216, 120, 0.25)',
     marginLeft: 12,
+  },
+  overlay: {
+    position: 'fixed', inset: 0,
+    background: 'rgba(1, 74, 50, 0.45)',
+    backdropFilter: 'blur(4px)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 100, padding: 20,
+    animation: 'fadeIn 0.2s var(--ease)',
+  },
+  modal: {
+    background: 'white', borderRadius: 18, width: '100%', maxWidth: 420,
+    boxShadow: '0 24px 60px rgba(1, 74, 50, 0.35), 0 8px 24px rgba(1, 74, 50, 0.15)',
+    overflow: 'hidden',
+    color: '#1a1a1a',
+  },
+  modalHeader: {
+    position: 'relative',
+    padding: '20px 24px 16px', borderBottom: '1px solid #f0f0f0',
+  },
+  modalTitle: {
+    fontSize: 18, fontWeight: 700, color: '#014A32', margin: 0,
+    textAlign: 'center',
+  },
+  closeBtn: {
+    position: 'absolute', top: 14, right: 14,
+    width: 32, height: 32, borderRadius: 8,
+    color: '#888', background: 'transparent',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    border: 'none', cursor: 'pointer',
+  },
+  modalBody: { padding: '20px 24px' },
+  modalText: { fontSize: 14, color: '#333', margin: 0, lineHeight: 1.6, textAlign: 'center' },
+  modalFooter: {
+    display: 'flex', gap: 10, padding: '12px 24px 20px',
+    borderTop: '1px solid #f0f0f0',
+  },
+  cancelBtn: {
+    flex: 1, padding: '11px 0',
+    border: '1.5px solid #dde3dd', borderRadius: 10,
+    fontSize: 14, fontWeight: 600, color: '#666',
+    background: 'white', cursor: 'pointer',
+  },
+  confirmBtn: {
+    flex: 1, padding: '11px 0',
+    background: '#c62828', color: 'white', borderRadius: 10,
+    fontSize: 14, fontWeight: 600,
+    border: 'none', cursor: 'pointer',
   },
 }
 

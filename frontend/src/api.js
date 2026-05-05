@@ -12,4 +12,18 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// 401 → token หมดอายุ/โดน revoke → กลับไปหน้า login
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem('token')
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(err)
+  }
+)
+
 export default api

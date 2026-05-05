@@ -1,21 +1,58 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
+import { AlertCircle, Check, Calendar, Clock } from 'lucide-react'
 import api from '../api'
+import { useUser } from '../useUser'
 import Navbar from '../components/Navbar'
 
+const formatToDDMMYYYY = (yyyymmdd) => {
+  if (!yyyymmdd) return ''
+  const [yyyy, mm, dd] = yyyymmdd.split('-')
+  return `${dd}/${mm}/${yyyy}`
+}
+
+const parseDDMMYYYY = (str) => {
+  const match = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (!match) return null
+  const [, dd, mm, yyyy] = match
+  return `${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`
+}
+
 function Book() {
+  const { isAdmin } = useUser()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
 
   const [form, setForm] = useState({
     title: '',
-    date: searchParams.get('date') || '',
+    date: formatToDDMMYYYY(searchParams.get('date')) || '',
     startTime: searchParams.get('startTime') || '',
     endTime: '',
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+  const dateInputRef = useRef(null)
+  const startTimeRef = useRef(null)
+  const endTimeRef = useRef(null)
+
+  const openPicker = (ref) => {
+    const el = ref.current
+    if (!el) return
+    if (typeof el.showPicker === 'function') {
+      try { el.showPicker() } catch { el.focus() }
+    } else {
+      el.focus()
+    }
+  }
+  const openDatePicker = () => openPicker(dateInputRef)
+
+  const handleDatePick = (e) => {
+    const iso = e.target.value
+    if (iso) setForm(f => ({ ...f, date: formatToDDMMYYYY(iso) }))
+  }
+
+  const dateAsISO = parseDDMMYYYY(form.date) || ''
 
   const handleSubmit = async () => {
     setError('')
@@ -26,8 +63,14 @@ function Book() {
       return
     }
 
-    const startTime = `${form.date}T${form.startTime}:00+07:00`
-    const endTime   = `${form.date}T${form.endTime}:00+07:00`
+    const dateISO = parseDDMMYYYY(form.date)
+    if (!dateISO) {
+      setError('รูปแบบวันที่ไม่ถูกต้อง (DD/MM/YYYY)')
+      return
+    }
+
+    const startTime = `${dateISO}T${form.startTime}:00+07:00`
+    const endTime   = `${dateISO}T${form.endTime}:00+07:00`
 
     try {
       setLoading(true)
@@ -58,38 +101,42 @@ function Book() {
       <div style={s.body}>
         <div style={s.container}>
           <button style={s.backBtn} onClick={() => navigate('/calendar')} className="ku-back">
-            ← กลับไปหน้าปฏิทิน
+            กลับไปหน้าปฏิทิน
           </button>
 
           <div style={s.card} className="fade-in">
             <div style={s.cardHeader}>
-              <div style={s.headerIcon}>
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-                  <path d="M3 8C3 6.34 4.34 5 6 5h12c1.66 0 3 1.34 3 3v8c0 1.66-1.34 3-3 3H6c-1.66 0-3-1.34-3-3V8z" stroke="#1b5e20" strokeWidth="1.8"/>
-                  <path d="M16 11l4-2v6l-4-2v-2z" fill="#1b5e20"/>
-                </svg>
-              </div>
-              <div>
-                <h2 style={s.heading}>จองห้องประชุม Zoom</h2>
-                <p style={s.sub}>กรอกข้อมูลให้ครบถ้วนเพื่อสร้างห้องประชุมอัตโนมัติ</p>
-              </div>
+              <h2 style={s.heading}>จองห้องประชุม Zoom</h2>
             </div>
 
             <div style={s.infoBox}>
               <div style={s.infoItem}>
-                <span style={s.infoLabel}>⏱ ระยะเวลา</span>
+                <span style={s.infoLabel}>ระยะเวลา</span>
                 <span style={s.infoValue}>สูงสุด 40 นาที / ครั้ง</span>
               </div>
-              <div style={s.infoDivider} />
-              <div style={s.infoItem}>
-                <span style={s.infoLabel}>📅 ล่วงหน้า</span>
-                <span style={s.infoValue}>ไม่เกิน 7 วัน</span>
-              </div>
-              <div style={s.infoDivider} />
-              <div style={s.infoItem}>
-                <span style={s.infoLabel}>🎟 โควตา</span>
-                <span style={s.infoValue}>4 ครั้ง / เดือน</span>
-              </div>
+              {!isAdmin && (
+                <>
+                  <div style={s.infoDivider} />
+                  <div style={s.infoItem}>
+                    <span style={s.infoLabel}>ล่วงหน้า</span>
+                    <span style={s.infoValue}>ไม่เกิน 7 วัน</span>
+                  </div>
+                  <div style={s.infoDivider} />
+                  <div style={s.infoItem}>
+                    <span style={s.infoLabel}>โควตา</span>
+                    <span style={s.infoValue}>4 ครั้ง / เดือน</span>
+                  </div>
+                </>
+              )}
+              {isAdmin && (
+                <>
+                  <div style={s.infoDivider} />
+                  <div style={s.infoItem}>
+                    <span style={s.infoLabel}>สิทธิ์</span>
+                    <span style={s.infoValue}>Admin (ไม่จำกัดวัน/โควตา)</span>
+                  </div>
+                </>
+              )}
             </div>
 
             <div style={s.field}>
@@ -105,41 +152,90 @@ function Book() {
 
             <div style={s.field}>
               <label style={s.label}>วันที่ <span style={s.req}>*</span></label>
-              <input
-                style={s.input}
-                type="date"
-                value={form.date}
-                onChange={e => setForm({ ...form, date: e.target.value })}
-              />
+              <div style={s.dateWrap}>
+                <input
+                  style={{ ...s.input, paddingRight: 44 }}
+                  type="text"
+                  placeholder="DD/MM/YYYY"
+                  inputMode="numeric"
+                  maxLength={10}
+                  value={form.date}
+                  onChange={e => setForm({ ...form, date: e.target.value })}
+                />
+                <button
+                  type="button"
+                  style={s.dateBtn}
+                  className="ku-date-btn"
+                  onClick={openDatePicker}
+                  aria-label="เปิดปฏิทิน"
+                >
+                  <Calendar size={18} />
+                </button>
+                <input
+                  ref={dateInputRef}
+                  type="date"
+                  value={dateAsISO}
+                  onChange={handleDatePick}
+                  style={s.dateHidden}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                />
+              </div>
             </div>
 
             <div style={s.row}>
               <div style={{ ...s.field, flex: 1 }}>
                 <label style={s.label}>เวลาเริ่ม <span style={s.req}>*</span></label>
-                <input
-                  style={s.input}
-                  type="time"
-                  value={form.startTime}
-                  onChange={e => setForm({ ...form, startTime: e.target.value })}
-                />
+                <div style={s.dateWrap}>
+                  <input
+                    ref={startTimeRef}
+                    style={{ ...s.input, paddingRight: 44 }}
+                    type="time"
+                    className="ku-time-input"
+                    value={form.startTime}
+                    onChange={e => setForm({ ...form, startTime: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    style={s.dateBtn}
+                    className="ku-date-btn"
+                    onClick={() => openPicker(startTimeRef)}
+                    aria-label="เปิดเลือกเวลา"
+                  >
+                    <Clock size={18} />
+                  </button>
+                </div>
               </div>
               <div style={{ ...s.field, flex: 1 }}>
                 <label style={s.label}>เวลาสิ้นสุด <span style={s.req}>*</span></label>
-                <input
-                  style={s.input}
-                  type="time"
-                  value={form.endTime}
-                  onChange={e => setForm({ ...form, endTime: e.target.value })}
-                />
+                <div style={s.dateWrap}>
+                  <input
+                    ref={endTimeRef}
+                    style={{ ...s.input, paddingRight: 44 }}
+                    type="time"
+                    className="ku-time-input"
+                    value={form.endTime}
+                    onChange={e => setForm({ ...form, endTime: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    style={s.dateBtn}
+                    className="ku-date-btn"
+                    onClick={() => openPicker(endTimeRef)}
+                    aria-label="เปิดเลือกเวลา"
+                  >
+                    <Clock size={18} />
+                  </button>
+                </div>
               </div>
             </div>
 
             {duration !== null && (
               <div style={{
                 ...s.durationBox,
-                background: overLimit ? '#fff0f0' : '#f1f8f1',
-                color: overLimit ? '#c62828' : '#2e7d32',
-                borderColor: overLimit ? '#ffcccc' : '#c8e6c9',
+                background: overLimit ? '#fff0f0' : '#F0FBF6',
+                color: overLimit ? '#c62828' : '#1FBA7C',
+                borderColor: overLimit ? '#ffcccc' : '#B5E8D2',
               }}>
                 <span style={{ fontWeight: 600 }}>ระยะเวลา:</span>
                 <span>{duration} นาที</span>
@@ -149,14 +245,14 @@ function Book() {
 
             {error && (
               <div style={s.error} className="slide-in">
-                <span style={s.errorIcon}>⚠</span>
+                <AlertCircle size={18} style={s.errorIcon} />
                 <span>{error}</span>
               </div>
             )}
 
             {success && (
               <div style={s.success} className="slide-in">
-                <div style={s.successCheck}>✓</div>
+                <div style={s.successCheck}><Check size={18} strokeWidth={3} /></div>
                 <div>
                   <strong>จองสำเร็จ!</strong>
                   <p style={s.successText}>กรุณาตรวจสอบอีเมลของคุณเพื่อรับลิงก์ Zoom</p>
@@ -176,27 +272,34 @@ function Book() {
                   <span>กำลังสร้างห้องประชุม...</span>
                 </>
               ) : (
-                <>
-                  <span>ยืนยันการจอง</span>
-                  <span style={s.btnArrow}>→</span>
-                </>
+                <span>ยืนยันการจอง</span>
               )}
             </button>
-
-            <p style={s.disclaimer}>
-              เมื่อกดยืนยัน ระบบจะสร้าง Zoom Meeting ส่งให้ทาง email อัตโนมัติ
-            </p>
           </div>
         </div>
       </div>
 
       <style>{`
-        .ku-back { transition: color 0.15s var(--ease), transform 0.15s var(--ease); }
-        .ku-back:hover { color: #134d20; transform: translateX(-2px); }
+        .ku-back {
+          transition: background 0.2s var(--ease), color 0.2s var(--ease),
+                      border-color 0.2s var(--ease), transform 0.15s var(--ease),
+                      box-shadow 0.2s var(--ease);
+        }
+        .ku-back:hover {
+          background: linear-gradient(135deg, #03A96B 0%, #1FBA7C 100%) !important;
+          color: white !important;
+          border-color: #03A96B !important;
+          transform: translateY(-1px);
+          box-shadow: 0 6px 18px rgba(1, 74, 50, 0.22) !important;
+        }
+        .ku-date-btn { transition: background 0.15s var(--ease), color 0.15s var(--ease); }
+        .ku-date-btn:hover { background: #1FBA7C !important; color: white !important; }
+        .ku-time-input::-webkit-calendar-picker-indicator { display: none; }
+        .ku-time-input::-webkit-inner-spin-button { display: none; }
         .ku-submit { transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease); }
         .ku-submit:not(:disabled):hover {
           transform: translateY(-1px);
-          box-shadow: 0 8px 24px rgba(13, 61, 24, 0.3) !important;
+          box-shadow: 0 8px 24px rgba(1, 74, 50, 0.3) !important;
         }
       `}</style>
     </div>
@@ -208,34 +311,32 @@ const s = {
   body: { display: 'flex', justifyContent: 'center', padding: '40px 24px' },
   container: { width: '100%', maxWidth: 540 },
   backBtn: {
-    color: '#1b5e20', fontSize: 13, fontWeight: 500, marginBottom: 16,
-    padding: '6px 0', display: 'inline-flex', alignItems: 'center', gap: 6,
+    color: '#03A96B', fontSize: 13, fontWeight: 600, marginBottom: 16,
+    padding: '9px 18px', display: 'inline-flex', alignItems: 'center', gap: 6,
+    background: 'white',
+    border: '1.5px solid #B5E8D2',
+    borderRadius: 10,
+    boxShadow: '0 2px 6px rgba(1, 74, 50, 0.06)',
   },
   card: {
     background: 'white', borderRadius: 20, padding: '36px 36px 28px',
-    boxShadow: '0 8px 28px rgba(13, 61, 24, 0.08), 0 2px 8px rgba(13, 61, 24, 0.04)',
+    boxShadow: '0 8px 28px rgba(1, 74, 50, 0.08), 0 2px 8px rgba(1, 74, 50, 0.04)',
     border: '1px solid #e1e7e1',
   },
-  cardHeader: {
-    display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 24,
-  },
-  headerIcon: {
-    width: 48, height: 48, borderRadius: 12,
-    background: 'linear-gradient(135deg, #f1f8f1 0%, #e8f5e9 100%)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    flexShrink: 0,
-  },
-  heading: { fontSize: 22, fontWeight: 700, color: '#0d3d18', margin: '4px 0 4px' },
-  sub: { fontSize: 13, color: '#777', margin: 0 },
+  cardHeader: { marginBottom: 24 },
+  heading: { fontSize: 22, fontWeight: 700, color: '#014A32', margin: 0 },
   infoBox: {
-    display: 'flex', alignItems: 'center',
-    background: '#f1f8f1', borderRadius: 12, padding: '12px 16px',
-    marginBottom: 24, border: '1px solid #d4e7d6',
+    display: 'flex', alignItems: 'stretch', gap: 16,
+    background: '#F0FBF6', borderRadius: 12, padding: '16px 20px',
+    marginBottom: 24, border: '1px solid #B5E8D2',
   },
-  infoItem: { flex: 1, display: 'flex', flexDirection: 'column', gap: 2 },
-  infoLabel: { fontSize: 11, color: '#666', fontWeight: 500 },
-  infoValue: { fontSize: 12, color: '#1b5e20', fontWeight: 600 },
-  infoDivider: { width: 1, height: 28, background: '#c8e6c9' },
+  infoItem: { flex: 1, display: 'flex', flexDirection: 'column', gap: 6, lineHeight: 1.3 },
+  infoLabel: {
+    fontSize: 11, color: '#888', fontWeight: 500,
+    textTransform: 'uppercase', letterSpacing: 0.5,
+  },
+  infoValue: { fontSize: 13, color: '#03A96B', fontWeight: 600 },
+  infoDivider: { width: 1, background: '#B5E8D2', alignSelf: 'stretch' },
   field: { marginBottom: 18 },
   label: {
     display: 'block', fontSize: 13, fontWeight: 600,
@@ -246,6 +347,18 @@ const s = {
     width: '100%', padding: '12px 14px',
     border: '1.5px solid #dde3dd', borderRadius: 10,
     fontSize: 14, background: '#fff',
+  },
+  dateWrap: { position: 'relative' },
+  dateBtn: {
+    position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+    width: 32, height: 32, borderRadius: 8,
+    color: '#03A96B', background: '#F0FBF6',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  dateHidden: {
+    position: 'absolute', right: 6, top: '50%',
+    width: 32, height: 32, opacity: 0, pointerEvents: 'none',
+    border: 'none', padding: 0,
   },
   row: { display: 'flex', gap: 14 },
   durationBox: {
@@ -262,38 +375,33 @@ const s = {
     padding: '12px 14px', borderRadius: 10, fontSize: 13,
     marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
   },
-  errorIcon: { fontSize: 18 },
+  errorIcon: { color: '#cc3333', flexShrink: 0 },
   success: {
-    background: 'linear-gradient(135deg, #f1f8f1 0%, #e8f5e9 100%)',
-    border: '1px solid #b3dfc0', color: '#1b5e20',
+    background: 'linear-gradient(135deg, #F0FBF6 0%, #D9F5E7 100%)',
+    border: '1px solid #88E0BB', color: '#03A96B',
     padding: '14px 16px', borderRadius: 12, fontSize: 13,
     marginBottom: 16, display: 'flex', alignItems: 'center', gap: 14,
   },
   successCheck: {
     width: 32, height: 32, borderRadius: '50%',
-    background: '#2e7d32', color: 'white',
+    background: '#1FBA7C', color: 'white',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     fontSize: 16, fontWeight: 700, flexShrink: 0,
     animation: 'pulseGlow 1.5s var(--ease) infinite',
   },
-  successText: { fontSize: 12, color: '#2d7a3e', margin: '2px 0 0' },
+  successText: { fontSize: 12, color: '#028152', margin: '2px 0 0' },
   btn: {
     width: '100%', padding: '14px 0',
-    background: 'linear-gradient(135deg, #1b5e20 0%, #134d20 100%)',
+    background: 'linear-gradient(135deg, #03A96B 0%, #028152 100%)',
     color: 'white', borderRadius: 12,
     fontSize: 15, fontWeight: 600,
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-    boxShadow: '0 4px 14px rgba(13, 61, 24, 0.25)',
+    boxShadow: '0 4px 14px rgba(1, 74, 50, 0.25)',
   },
-  btnArrow: { fontSize: 18 },
   btnSpinner: {
     width: 16, height: 16, borderRadius: '50%',
     border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white',
     animation: 'spin 0.6s linear infinite',
-  },
-  disclaimer: {
-    textAlign: 'center', fontSize: 11, color: '#999',
-    margin: '14px 0 0',
   },
 }
 

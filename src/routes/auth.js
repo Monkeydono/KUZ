@@ -20,13 +20,17 @@ passport.use(new GoogleStrategy({
       return done(null, false, { message: 'กรุณาใช้ email @ku.th เท่านั้น' });
     }
 
-    // upsert user
+    const adminEmails = (process.env.ADMIN_EMAILS || '')
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const role = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'student';
+
+    // upsert user — sync role ทุกครั้งที่ login เพื่อให้ env เป็น source of truth
     const result = await pool.query(
-      `INSERT INTO users (email, name)
-       VALUES ($1, $2)
-       ON CONFLICT (email) DO UPDATE SET name = $2
+      `INSERT INTO users (email, name, role)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (email) DO UPDATE SET name = $2, role = $3
        RETURNING *`,
-      [email, profile.displayName]
+      [email, profile.displayName, role]
     );
 
     return done(null, result.rows[0]);
@@ -51,14 +55,21 @@ router.get('/google/callback',
       { expiresIn: '7d' }
     );
 
-    // redirect ไป frontend พร้อม token
+    // ใช้ fragment (#) แทน query (?) — fragment ไม่ติด server log/Referer/history
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}?token=${token}`);
+    res.redirect(`${frontendUrl}/#token=${token}`);
   }
 );
 
 router.get('/failed', (req, res) => {
   res.status(401).json({ error: 'กรุณาใช้ email @ku.th เท่านั้น' });
+});
+
+const authenticate = require('../middleware/authenticate');
+
+// GET /auth/me — frontend ใช้รู้ role ปัจจุบัน (จาก DB ผ่าน middleware)
+router.get('/me', authenticate, (req, res) => {
+  res.json(req.user);
 });
 
 module.exports = router;

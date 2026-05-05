@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Calendar, Clock, CalendarX2, AlertCircle, X } from 'lucide-react'
 import api from '../api'
 import Navbar from '../components/Navbar'
 
@@ -8,6 +9,9 @@ function MyBookings() {
   const [bookings, setBookings] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
+  const [confirmId, setConfirmId] = useState(null)
+  const [cancelLoading, setCancelLoading] = useState(false)
+  const [cancelError, setCancelError] = useState('')
 
   useEffect(() => {
     fetchBookings()
@@ -24,13 +28,28 @@ function MyBookings() {
     }
   }
 
-  const handleCancel = async (id) => {
-    if (!confirm('ยืนยันการยกเลิกการจองนี้?\n\nการยกเลิกจะคืนโควตา 1 ครั้ง')) return
+  const handleCancel = (id) => {
+    setCancelError('')
+    setConfirmId(id)
+  }
+
+  const closeConfirm = () => {
+    if (cancelLoading) return
+    setConfirmId(null)
+    setCancelError('')
+  }
+
+  const doCancel = async () => {
+    setCancelError('')
+    setCancelLoading(true)
     try {
-      await api.delete(`/bookings/${id}`)
-      fetchBookings()
+      await api.delete(`/bookings/${confirmId}`)
+      setConfirmId(null)
+      await fetchBookings()
     } catch (err) {
-      alert('ยกเลิกไม่สำเร็จ กรุณาลองใหม่')
+      setCancelError(err.response?.data?.error || 'ยกเลิกไม่สำเร็จ กรุณาลองใหม่')
+    } finally {
+      setCancelLoading(false)
     }
   }
 
@@ -43,7 +62,7 @@ function MyBookings() {
   })
 
   const statusLabel = (status) => ({
-    confirmed: { text: 'กำลังจะมาถึง', color: '#2e7d32', bg: '#e8f5e9' },
+    confirmed: { text: 'กำลังจะมาถึง', color: '#1FBA7C', bg: '#D9F5E7' },
     cancelled: { text: 'ยกเลิกแล้ว',    color: '#c62828', bg: '#ffebee' },
     completed: { text: 'เสร็จสิ้น',     color: '#666',    bg: '#f0f0f0' },
   }[status] || { text: status, color: '#888', bg: '#f5f5f5' })
@@ -69,14 +88,14 @@ function MyBookings() {
       <Navbar />
 
       <div style={s.body}>
+        <button style={s.backBtn} onClick={() => navigate('/calendar')} className="ku-back">
+          กลับไปหน้าปฏิทิน
+        </button>
+
         <div style={s.header}>
           <div>
             <h2 style={s.heading}>การจองของฉัน</h2>
-            <p style={s.sub}>ประวัติการจองห้อง Zoom ทั้งหมดของคุณ</p>
           </div>
-          <button style={s.newBtn} className="ku-new-btn" onClick={() => navigate('/book')}>
-            + จองใหม่
-          </button>
         </div>
 
         <div style={s.statsGrid}>
@@ -84,8 +103,8 @@ function MyBookings() {
             <span style={s.statNum}>{stats.total}</span>
             <span style={s.statLbl}>ทั้งหมด</span>
           </div>
-          <div style={{ ...s.statCard, borderColor: '#c8e6c9' }}>
-            <span style={{ ...s.statNum, color: '#2e7d32' }}>{stats.confirmed}</span>
+          <div style={{ ...s.statCard, borderColor: '#B5E8D2' }}>
+            <span style={{ ...s.statNum, color: '#1FBA7C' }}>{stats.confirmed}</span>
             <span style={s.statLbl}>กำลังจะมาถึง</span>
           </div>
           <div style={{ ...s.statCard, borderColor: '#e0e0e0' }}>
@@ -127,7 +146,7 @@ function MyBookings() {
 
         {!loading && filtered.length === 0 && (
           <div style={s.emptyBox}>
-            <div style={s.emptyIcon}>📅</div>
+            <div style={s.emptyIcon}><CalendarX2 size={48} strokeWidth={1.5} /></div>
             <p style={s.emptyTitle}>ยังไม่มีการจอง</p>
             <p style={s.emptyDesc}>เริ่มจองห้องประชุม Zoom ของคุณวันนี้</p>
             <button style={s.btnSm} className="ku-new-btn" onClick={() => navigate('/book')}>
@@ -153,11 +172,11 @@ function MyBookings() {
                         </span>
                       </div>
                       <div style={s.dateRow}>
-                        <span style={s.dateIcon}>📅</span>
+                        <Calendar size={14} style={s.dateIcon} />
                         <span style={s.date}>{formatDate(b.start_time)}</span>
                       </div>
                       <div style={s.dateRow}>
-                        <span style={s.dateIcon}>🕐</span>
+                        <Clock size={14} style={s.dateIcon} />
                         <span style={s.time}>
                           {formatTime(b.start_time)} – {formatTime(b.end_time)}
                         </span>
@@ -202,18 +221,72 @@ function MyBookings() {
         </div>
       </div>
 
+      {confirmId !== null && (
+        <div style={s.overlay} onClick={closeConfirm}>
+          <div style={s.confirmModal} className="slide-in" onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>ยืนยันการยกเลิก</h3>
+              <button style={s.closeBtn} onClick={closeConfirm} disabled={cancelLoading}>
+                <X size={18} />
+              </button>
+            </div>
+            <div style={s.modalBody}>
+              <p style={s.modalText}>
+                ต้องการยกเลิกการจองนี้ใช่หรือไม่?<br />
+                <span style={s.modalSubText}>การยกเลิกจะคืนโควตา 1 ครั้ง</span>
+              </p>
+              {cancelError && (
+                <div style={s.modalError}>
+                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                  <span>{cancelError}</span>
+                </div>
+              )}
+            </div>
+            <div style={s.modalFooter}>
+              <button
+                style={s.modalCancelBtn}
+                onClick={closeConfirm}
+                disabled={cancelLoading}
+              >
+                ไม่ใช่
+              </button>
+              <button
+                style={{ ...s.modalConfirmBtn, opacity: cancelLoading ? 0.6 : 1 }}
+                onClick={doCancel}
+                disabled={cancelLoading}
+              >
+                {cancelLoading ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
+        .ku-back {
+          transition: background 0.2s var(--ease), color 0.2s var(--ease),
+                      border-color 0.2s var(--ease), transform 0.15s var(--ease),
+                      box-shadow 0.2s var(--ease);
+        }
+        .ku-back:hover {
+          background: linear-gradient(135deg, #03A96B 0%, #1FBA7C 100%) !important;
+          color: white !important;
+          border-color: #03A96B !important;
+          transform: translateY(-1px);
+          box-shadow: 0 6px 18px rgba(1, 74, 50, 0.22) !important;
+        }
+
         .ku-new-btn { transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease); }
         .ku-new-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(13,61,24,0.25); }
 
         .ku-filter { transition: all 0.15s var(--ease); }
-        .ku-filter:hover { background: #f1f8f1 !important; }
+        .ku-filter:hover { background: #F0FBF6 !important; }
 
         .ku-booking-card { transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease); }
         .ku-booking-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(13,61,24,0.1) !important; }
 
         .ku-zoom-btn { transition: background 0.15s var(--ease), transform 0.15s var(--ease); }
-        .ku-zoom-btn:hover { background: #134d20 !important; transform: translateY(-1px); }
+        .ku-zoom-btn:hover { background: #028152 !important; transform: translateY(-1px); }
 
         .ku-cancel { transition: background 0.15s var(--ease), color 0.15s var(--ease); }
         .ku-cancel:hover { background: #ffebee !important; color: #b71c1c !important; }
@@ -225,17 +298,25 @@ function MyBookings() {
 const s = {
   root: { minHeight: '100vh', background: '#f4f6f4' },
   body: { maxWidth: 760, margin: '0 auto', padding: '40px 24px' },
+  backBtn: {
+    color: '#03A96B', fontSize: 13, fontWeight: 600, marginBottom: 16,
+    padding: '9px 18px', display: 'inline-flex', alignItems: 'center', gap: 6,
+    background: 'white',
+    border: '1.5px solid #B5E8D2',
+    borderRadius: 10,
+    boxShadow: '0 2px 6px rgba(1, 74, 50, 0.06)',
+  },
   header: {
     display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
     marginBottom: 24, gap: 16,
   },
-  heading: { fontSize: 26, fontWeight: 700, color: '#0d3d18', margin: 0 },
+  heading: { fontSize: 26, fontWeight: 700, color: '#014A32', margin: 0 },
   sub: { fontSize: 13, color: '#888', margin: '6px 0 0' },
   newBtn: {
-    background: 'linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%)',
+    background: 'linear-gradient(135deg, #03A96B 0%, #1FBA7C 100%)',
     color: 'white', padding: '11px 22px', borderRadius: 10,
     fontSize: 14, fontWeight: 600,
-    boxShadow: '0 4px 12px rgba(13, 61, 24, 0.2)',
+    boxShadow: '0 4px 12px rgba(1, 74, 50, 0.2)',
   },
   statsGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
@@ -257,12 +338,12 @@ const s = {
     display: 'flex', alignItems: 'center', gap: 8,
   },
   filterBtnActive: {
-    background: 'linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%)',
-    color: 'white', borderColor: '#1b5e20',
-    boxShadow: '0 2px 8px rgba(13, 61, 24, 0.2)',
+    background: 'linear-gradient(135deg, #03A96B 0%, #1FBA7C 100%)',
+    color: 'white', borderColor: '#03A96B',
+    boxShadow: '0 2px 8px rgba(1, 74, 50, 0.2)',
   },
   filterCount: {
-    background: '#f1f8f1', color: '#666',
+    background: '#F0FBF6', color: '#666',
     fontSize: 11, fontWeight: 600,
     padding: '1px 8px', borderRadius: 10, minWidth: 20, textAlign: 'center',
   },
@@ -272,7 +353,7 @@ const s = {
   list: { display: 'flex', flexDirection: 'column', gap: 12 },
   card: {
     background: 'white', borderRadius: 14, overflow: 'hidden',
-    boxShadow: '0 2px 8px rgba(13, 61, 24, 0.04), 0 1px 3px rgba(13, 61, 24, 0.04)',
+    boxShadow: '0 2px 8px rgba(1, 74, 50, 0.04), 0 1px 3px rgba(1, 74, 50, 0.04)',
     border: '1px solid #e1e7e1',
     display: 'flex',
   },
@@ -289,7 +370,7 @@ const s = {
     display: 'flex', alignItems: 'center', gap: 8,
     fontSize: 13, color: '#555', marginTop: 4,
   },
-  dateIcon: { fontSize: 12 },
+  dateIcon: { color: '#888', flexShrink: 0 },
   date: { color: '#555' },
   time: { color: '#555', fontWeight: 500 },
   cardBottom: {
@@ -297,7 +378,7 @@ const s = {
     marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0',
   },
   zoomBtn: {
-    background: '#1b5e20', color: 'white',
+    background: '#03A96B', color: 'white',
     padding: '8px 16px', borderRadius: 8,
     fontSize: 13, fontWeight: 600,
     display: 'inline-flex', alignItems: 'center', gap: 8,
@@ -320,16 +401,19 @@ const s = {
   emptyBox: {
     textAlign: 'center', padding: '60px 24px',
     background: 'white', borderRadius: 16,
-    border: '1px dashed #c8e6c9',
+    border: '1px dashed #B5E8D2',
   },
-  emptyIcon: { fontSize: 48, marginBottom: 16 },
+  emptyIcon: {
+    color: '#88E0BB', marginBottom: 16,
+    display: 'flex', justifyContent: 'center',
+  },
   emptyTitle: { color: '#1a1a1a', fontSize: 16, fontWeight: 600, margin: '0 0 6px' },
   emptyDesc: { color: '#888', fontSize: 13, margin: '0 0 20px' },
   btnSm: {
-    background: 'linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%)',
+    background: 'linear-gradient(135deg, #03A96B 0%, #1FBA7C 100%)',
     color: 'white', padding: '11px 24px', borderRadius: 10,
     fontSize: 14, fontWeight: 600,
-    boxShadow: '0 4px 12px rgba(13, 61, 24, 0.2)',
+    boxShadow: '0 4px 12px rgba(1, 74, 50, 0.2)',
   },
   loadingBox: {
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
@@ -337,8 +421,55 @@ const s = {
   },
   spinner: {
     width: 28, height: 28, borderRadius: '50%',
-    border: '3px solid #e1e7e1', borderTopColor: '#2e7d32',
+    border: '3px solid #e1e7e1', borderTopColor: '#1FBA7C',
     animation: 'spin 0.8s linear infinite',
+  },
+  overlay: {
+    position: 'fixed', inset: 0,
+    background: 'rgba(1, 74, 50, 0.45)',
+    backdropFilter: 'blur(4px)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 100, padding: 20,
+    animation: 'fadeIn 0.2s var(--ease)',
+  },
+  confirmModal: {
+    background: 'white', borderRadius: 18, width: '100%', maxWidth: 420,
+    boxShadow: '0 24px 60px rgba(1, 74, 50, 0.35), 0 8px 24px rgba(1, 74, 50, 0.15)',
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '20px 24px 16px', borderBottom: '1px solid #f0f0f0',
+  },
+  modalTitle: { fontSize: 18, fontWeight: 700, color: '#014A32', margin: 0 },
+  closeBtn: {
+    width: 32, height: 32, borderRadius: 8,
+    color: '#888', background: 'transparent',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  modalBody: { padding: '20px 24px' },
+  modalText: { fontSize: 14, color: '#333', margin: 0, lineHeight: 1.6 },
+  modalSubText: { fontSize: 12, color: '#888' },
+  modalError: {
+    marginTop: 12,
+    background: '#fff0f0', border: '1px solid #ffcccc', color: '#cc3333',
+    padding: '10px 12px', borderRadius: 10, fontSize: 13,
+    display: 'flex', alignItems: 'center', gap: 8,
+  },
+  modalFooter: {
+    display: 'flex', gap: 10, padding: '12px 24px 20px',
+    borderTop: '1px solid #f0f0f0',
+  },
+  modalCancelBtn: {
+    flex: 1, padding: '11px 0',
+    border: '1.5px solid #dde3dd', borderRadius: 10,
+    fontSize: 14, fontWeight: 600, color: '#666',
+    background: 'white',
+  },
+  modalConfirmBtn: {
+    flex: 1, padding: '11px 0',
+    background: '#c62828', color: 'white', borderRadius: 10,
+    fontSize: 14, fontWeight: 600,
   },
 }
 

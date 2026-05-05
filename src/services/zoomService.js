@@ -1,8 +1,16 @@
 const axios = require('axios');
 require('dotenv').config();
 
-// ขอ Access Token จาก Zoom
+// Cache token in-memory — Zoom S2S token อายุ ~1 ชม.
+// refresh ก่อนหมด 1 นาทีเพื่อกัน race
+let cachedToken = null;
+let cachedExpiry = 0;
+
 async function getZoomToken() {
+  if (cachedToken && Date.now() < cachedExpiry - 60000) {
+    return cachedToken;
+  }
+
   const credentials = Buffer.from(
     `${process.env.ZOOM_CLIENT_ID}:${process.env.ZOOM_CLIENT_SECRET}`
   ).toString('base64');
@@ -14,10 +22,11 @@ async function getZoomToken() {
     { headers: { Authorization: `Basic ${credentials}` } }
   );
 
-  return response.data.access_token;
+  cachedToken = response.data.access_token;
+  cachedExpiry = Date.now() + (response.data.expires_in * 1000);
+  return cachedToken;
 }
 
-// สร้าง Zoom Meeting
 async function createMeeting({ title, startTime, durationMinutes }) {
   const token = await getZoomToken();
 
@@ -25,8 +34,8 @@ async function createMeeting({ title, startTime, durationMinutes }) {
     'https://api.zoom.us/v2/users/me/meetings',
     {
       topic:      title,
-      type:       2, // scheduled meeting
-      start_time: startTime, // ISO 8601 เช่น "2026-04-27T10:00:00Z"
+      type:       2,
+      start_time: startTime,
       duration:   durationMinutes,
       timezone:   'Asia/Bangkok',
       settings: {
@@ -44,7 +53,6 @@ async function createMeeting({ title, startTime, durationMinutes }) {
   };
 }
 
-// ลบ Zoom Meeting
 async function deleteMeeting(meetingId) {
   const token = await getZoomToken();
 

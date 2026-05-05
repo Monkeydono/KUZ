@@ -1,14 +1,14 @@
 @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700;800&display=swap');
 
 :root {
-  --ku-green-900: #0d3d18;
-  --ku-green-800: #134d20;
-  --ku-green-700: #1b5e20;
-  --ku-green-600: #2e7d32;
-  --ku-green-500: #43a047;
-  --ku-green-300: #a5d6a7;
-  --ku-green-100: #e8f5e9;
-  --ku-green-50:  #f1f8f1;
+  --ku-green-900: #014A32;
+  --ku-green-800: #028152;
+  --ku-green-700: #03A96B;
+  --ku-green-600: #1FBA7C;
+  --ku-green-500: #4DD9A2;
+  --ku-green-300: #88E0BB;
+  --ku-green-100: #D9F5E7;
+  --ku-green-50:  #F0FBF6;
 
   --ku-gold-500: #c9a227;
   --ku-gold-300: #f1d878;
@@ -26,10 +26,10 @@
   --radius-lg: 16px;
   --radius-xl: 24px;
 
-  --shadow-sm: 0 1px 2px rgba(13, 61, 24, 0.04), 0 1px 3px rgba(13, 61, 24, 0.06);
-  --shadow:    0 2px 8px rgba(13, 61, 24, 0.06), 0 4px 20px rgba(13, 61, 24, 0.06);
-  --shadow-lg: 0 8px 28px rgba(13, 61, 24, 0.12), 0 2px 8px rgba(13, 61, 24, 0.08);
-  --shadow-glow: 0 0 0 4px rgba(46, 125, 50, 0.15);
+  --shadow-sm: 0 1px 2px rgba(1, 74, 50, 0.04), 0 1px 3px rgba(1, 74, 50, 0.06);
+  --shadow:    0 2px 8px rgba(1, 74, 50, 0.06), 0 4px 20px rgba(1, 74, 50, 0.06);
+  --shadow-lg: 0 8px 28px rgba(1, 74, 50, 0.12), 0 2px 8px rgba(1, 74, 50, 0.08);
+  --shadow-glow: 0 0 0 4px rgba(3, 169, 107, 0.15);
 
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
 
@@ -113,8 +113,8 @@ input:focus {
 }
 
 @keyframes pulseGlow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(165, 214, 167, 0.6); }
-  50%      { box-shadow: 0 0 0 12px rgba(165, 214, 167, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(136, 224, 187, 0.6); }
+  50%      { box-shadow: 0 0 0 12px rgba(136, 224, 187, 0); }
 }
 
 @keyframes spin {

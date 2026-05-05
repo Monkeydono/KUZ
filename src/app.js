@@ -1,6 +1,7 @@
 const express = require('express');
 const passport = require('passport');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const app = express();
 require('dotenv').config();
 
@@ -15,21 +16,33 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(passport.initialize());
 
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const authRoutes    = require('./routes/auth');
 const bookingRoutes = require('./routes/bookings');
 const adminRoutes   = require('./routes/admin');
 const authenticate  = require('./middleware/authenticate');
 
-app.use('/auth', authRoutes);
-app.use('/bookings', authenticate, bookingRoutes);
-app.use('/admin',    authenticate, adminRoutes);
+app.use('/auth',     authLimiter, authRoutes);
+app.use('/bookings', apiLimiter, authenticate, bookingRoutes);
+app.use('/admin',    apiLimiter, authenticate, adminRoutes);
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date() });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(err.status || 500).json({

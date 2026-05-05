@@ -1,25 +1,33 @@
-import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
 import Login from './pages/login'
 import Book from './pages/book'
 import MyBookings from './pages/my-bookings'
 import Calendar from './pages/calendar'
 
+// อ่าน token จาก URL fragment (#token=...) ไม่ใช่ query string
+// fragment ไม่ติด server log / Referer header
+function readTokenFromHash() {
+  const hash = window.location.hash.replace(/^#/, '')
+  if (!hash) return null
+  const params = new URLSearchParams(hash)
+  return params.get('token')
+}
+
 function TokenHandler() {
-  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
 
   useEffect(() => {
-    const tokenFromUrl = searchParams.get('token')
-    if (tokenFromUrl) {
-      localStorage.setItem('token', tokenFromUrl)
+    const tokenFromHash = readTokenFromHash()
+    if (tokenFromHash) {
+      localStorage.setItem('token', tokenFromHash)
+      window.history.replaceState(null, '', window.location.pathname)
       navigate('/calendar', { replace: true })
       return
     }
     const existingToken = localStorage.getItem('token')
     navigate(existingToken ? '/calendar' : '/login', { replace: true })
-  }, [])
+  }, [navigate])
 
   return null
 }

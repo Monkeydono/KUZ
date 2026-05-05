@@ -1,12 +1,19 @@
 import { useState, useEffect } from 'react'
+import { AlertCircle, Check, X } from 'lucide-react'
 import api from '../api'
+import { useUser } from '../useUser'
 import Navbar from '../components/Navbar'
 
-const HOURS = Array.from({ length: 13 }, (_, i) => i + 8)
-const DAYS = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส']
+const FIRST_HOUR = 8
+const LAST_HOUR = 20
+const HOURS = Array.from({ length: LAST_HOUR - FIRST_HOUR + 1 }, (_, i) => i + FIRST_HOUR)
+const PX_PER_HOUR = 64
+const TOP_PAD = 14
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
 
 function Calendar() {
+  const { isAdmin } = useUser()
   const today = new Date()
 
   const [currentDate, setCurrentDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
@@ -15,7 +22,7 @@ function Calendar() {
   const [loading, setLoading] = useState(false)
 
   const [modalHour, setModalHour] = useState(null)
-  const [modalForm, setModalForm] = useState({ title: '', endTime: '' })
+  const [modalForm, setModalForm] = useState({ title: '', startTime: '', endTime: '' })
   const [modalLoading, setModalLoading] = useState(false)
   const [modalError, setModalError] = useState('')
   const [modalSuccess, setModalSuccess] = useState(false)
@@ -47,30 +54,59 @@ function Calendar() {
 
   const { firstDay, daysInMonth } = getDaysInMonth(currentDate)
 
-  const isBooked = (hour) => {
-    return bookedSlots.some(slot => {
-      const start = new Date(slot.start_time)
-      const end = new Date(slot.end_time)
-      const slotStart = start.getHours() + start.getMinutes() / 60
-      const slotEnd = end.getHours() + end.getMinutes() / 60
-      return hour >= slotStart && hour < slotEnd
-    })
+  const slotToHours = (slot) => {
+    const start = new Date(slot.start_time)
+    const end = new Date(slot.end_time)
+    return [
+      start.getHours() + start.getMinutes() / 60,
+      end.getHours() + end.getMinutes() / 60,
+    ]
   }
 
-  const getSlotInfo = (hour) => {
-    return bookedSlots.find(slot => {
-      const start = new Date(slot.start_time)
-      const end = new Date(slot.end_time)
-      const slotStart = start.getHours() + start.getMinutes() / 60
-      const slotEnd = end.getHours() + end.getMinutes() / 60
-      return hour >= slotStart && hour < slotEnd
-    })
+  // hour-row [hour, hour+1) overlaps booking [s, e) if s < hour+1 AND e > hour
+  const isHourFullyBooked = (hour) => bookedSlots.some(slot => {
+    const [s, e] = slotToHours(slot)
+    return s <= hour && e >= hour + 1
+  })
+
+  const overlapsBooking = (startHour, endHour) => bookedSlots.some(slot => {
+    const [s, e] = slotToHours(slot)
+    return s < endHour && e > startHour
+  })
+
+  const floatToHHMM = (f) => {
+    const h = Math.floor(f)
+    const m = Math.round((f - h) * 60)
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`
   }
 
   const openModal = (hour) => {
-    if (isBooked(hour)) return
+    if (isHourFullyBooked(hour)) return
+
+    // หา earliest start ที่ว่างในชั่วโมงนี้ — ถ้ามี booking 10:30-11:10
+    // คลิก row 11:00 → ต้องเริ่มที่ 11:10 (round up ถึง 5 นาที = 11:15)
+    let earliest = hour
+    bookedSlots.forEach(slot => {
+      const [s, e] = slotToHours(slot)
+      if (s < hour + 1 && e > hour && e > earliest) earliest = e
+    })
+    earliest = Math.ceil(earliest * 12) / 12
+    if (earliest >= hour + 1) return
+
+    // หา latest end ที่ว่าง — ก่อน booking ตัวถัดไป
+    let latestEnd = hour + 1
+    bookedSlots.forEach(slot => {
+      const [s] = slotToHours(slot)
+      if (s >= earliest && s < latestEnd) latestEnd = s
+    })
+    const defaultEnd = Math.min(earliest + 0.5, latestEnd, earliest + 40 / 60)
+
     setModalHour(hour)
-    setModalForm({ title: '', endTime: `${String(hour).padStart(2,'0')}:30` })
+    setModalForm({
+      title: '',
+      startTime: floatToHHMM(earliest),
+      endTime: floatToHHMM(defaultEnd),
+    })
     setModalError('')
     setModalSuccess(false)
   }
@@ -87,14 +123,13 @@ function Calendar() {
       setModalError('กรุณากรอกหัวข้อการประชุม')
       return
     }
-    if (!modalForm.endTime) {
-      setModalError('กรุณาระบุเวลาสิ้นสุด')
+    if (!modalForm.startTime || !modalForm.endTime) {
+      setModalError('กรุณาระบุเวลาเริ่มและเวลาสิ้นสุด')
       return
     }
 
     const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth()+1).padStart(2,'0')}-${String(selectedDate.getDate()).padStart(2,'0')}`
-    const startStr = `${String(modalHour).padStart(2,'0')}:00`
-    const startTime = `${dateStr}T${startStr}:00+07:00`
+    const startTime = `${dateStr}T${modalForm.startTime}:00+07:00`
     const endTime   = `${dateStr}T${modalForm.endTime}:00+07:00`
 
     try {
@@ -122,22 +157,33 @@ function Calendar() {
       selectedDate.getFullYear() === currentDate.getFullYear()
   }
 
-  const isPast = (day) => {
+  const todayStart = new Date(today)
+  todayStart.setHours(0, 0, 0, 0)
+  const maxBookableDate = new Date(todayStart)
+  maxBookableDate.setDate(todayStart.getDate() + 7)
+
+  const isBookable = (day) => {
     const cellDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), day)
-    cellDate.setHours(23, 59, 59, 999)
-    return cellDate < today && !isToday(day)
+    cellDate.setHours(0, 0, 0, 0)
+    if (cellDate < todayStart) return false
+    // admin จองล่วงหน้าได้ไม่จำกัด, student จำกัด 7 วัน
+    return isAdmin || cellDate <= maxBookableDate
   }
 
   const totalBookedHours = bookedSlots.reduce((sum, slot) => {
     return sum + (new Date(slot.end_time) - new Date(slot.start_time)) / 3600000
   }, 0)
-  const freeSlots = HOURS.filter(h => !isBooked(h)).length
+  const freeSlots = HOURS.slice(0, -1).filter(h => !overlapsBooking(h, h + 1)).length
+
+  const isViewingToday = selectedDate.toDateString() === today.toDateString()
+  const nowHourFloat = today.getHours() + today.getMinutes() / 60
+  const showNow = isViewingToday && nowHourFloat >= FIRST_HOUR && nowHourFloat <= LAST_HOUR
 
   const calcModalDuration = () => {
-    if (modalHour === null || !modalForm.endTime) return null
+    if (!modalForm.startTime || !modalForm.endTime) return null
+    const [sh, sm] = modalForm.startTime.split(':').map(Number)
     const [eh, em] = modalForm.endTime.split(':').map(Number)
-    const mins = (eh * 60 + em) - modalHour * 60
-    return mins
+    return (eh * 60 + em) - (sh * 60 + sm)
   }
   const modalDuration = calcModalDuration()
   const modalOverLimit = modalDuration !== null && (modalDuration <= 0 || modalDuration > 40)
@@ -174,18 +220,21 @@ function Calendar() {
             {Array.from({ length: firstDay }).map((_, i) => <div key={`e${i}`} />)}
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1
-              const past = isPast(day)
+              const bookable = isBookable(day)
               return (
                 <div
                   key={day}
                   style={{
                     ...s.dayCell,
-                    ...(isSelected(day) ? s.selectedDay : {}),
+                    ...(bookable ? {} : s.disabledCell),
+                    ...(isSelected(day) && bookable ? s.selectedDay : {}),
                     ...(isToday(day) && !isSelected(day) ? s.todayCell : {}),
-                    ...(past ? s.pastCell : {}),
                   }}
-                  className="ku-day-cell"
-                  onClick={() => setSelectedDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), day))}
+                  className={bookable ? 'ku-day-cell' : ''}
+                  onClick={() => {
+                    if (!bookable) return
+                    setSelectedDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), day))
+                  }}
                 >
                   {day}
                   {isToday(day) && !isSelected(day) && <div style={s.todayDot} />}
@@ -197,7 +246,7 @@ function Calendar() {
           <div style={s.statsBox}>
             <div style={s.statRow}>
               <span style={s.statLabel}>ช่วงเวลาว่าง</span>
-              <span style={{ ...s.statValue, color: '#2e7d32' }}>{freeSlots} ชั่วโมง</span>
+              <span style={{ ...s.statValue, color: '#1FBA7C' }}>{freeSlots} ชั่วโมง</span>
             </div>
             <div style={s.statRow}>
               <span style={s.statLabel}>มีการจอง</span>
@@ -209,7 +258,7 @@ function Calendar() {
 
           <div style={s.legend}>
             <div style={s.legendRow}>
-              <div style={{ ...s.legendDot, background: '#e8f5e9', border: '1.5px solid #c8e6c9' }} />
+              <div style={{ ...s.legendDot, background: '#D9F5E7', border: '1.5px solid #B5E8D2' }} />
               <span>ช่วงเวลาว่าง</span>
             </div>
             <div style={s.legendRow}>
@@ -231,51 +280,88 @@ function Calendar() {
             </div>
           </div>
 
-          <div style={s.timeline}>
-            {loading ? (
-              <div style={s.loadingBox}>
-                <div style={s.spinner} />
-                <span>กำลังโหลดข้อมูล...</span>
-              </div>
-            ) : (
-              HOURS.map(hour => {
-                const booked = isBooked(hour)
-                const slot = getSlotInfo(hour)
-                return (
-                  <div
-                    key={hour}
-                    style={{
-                      ...s.slot,
-                      ...(booked ? s.slotBooked : s.slotFree),
-                    }}
-                    className={booked ? '' : 'ku-slot-free'}
-                    onClick={() => openModal(hour)}
-                  >
-                    <div style={s.slotTimeBox}>
-                      <span style={s.slotTime}>{String(hour).padStart(2,'0')}:00</span>
-                    </div>
-                    <div style={s.slotContent}>
-                      {booked && slot ? (
-                        <>
-                          <div style={s.slotTitleBox}>
-                            <span style={s.slotBadge}>จองแล้ว</span>
-                            <span style={s.slotTitle}>{slot.title}</span>
-                          </div>
-                          <span style={s.slotDuration}>
-                            {new Date(slot.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
-                            {' – '}
-                            {new Date(slot.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        </>
-                      ) : (
-                        <span style={s.slotAvail}>ว่าง - คลิกเพื่อจอง</span>
-                      )}
-                    </div>
+          {loading ? (
+            <div style={s.loadingBox}>
+              <div style={s.spinner} />
+              <span>กำลังโหลดข้อมูล...</span>
+            </div>
+          ) : (
+            <div style={s.timeline}>
+              <div style={s.gutter}>
+                {HOURS.map(hour => (
+                  <div key={hour} style={s.gutterCell}>
+                    <span style={s.gutterTime}>
+                      {String(hour).padStart(2,'0')}:00
+                    </span>
                   </div>
-                )
-              })
-            )}
-          </div>
+                ))}
+              </div>
+
+              <div style={s.tracks}>
+                {HOURS.slice(0, -1).map(hour => {
+                  const fullyBooked = isHourFullyBooked(hour)
+                  return (
+                    <div
+                      key={hour}
+                      style={{
+                        ...s.hourRow,
+                        cursor: fullyBooked ? 'default' : 'pointer',
+                      }}
+                      className={fullyBooked ? '' : 'ku-hour-row'}
+                      onClick={() => !fullyBooked && openModal(hour)}
+                    >
+                      <span style={s.hourCue}>+ คลิกเพื่อจอง</span>
+                    </div>
+                  )
+                })}
+
+                {bookedSlots.map((slot, i) => {
+                  const start = new Date(slot.start_time)
+                  const end = new Date(slot.end_time)
+                  const startFloat = start.getHours() + start.getMinutes() / 60
+                  const endFloat = end.getHours() + end.getMinutes() / 60
+                  const top = (startFloat - FIRST_HOUR) * PX_PER_HOUR
+                  const height = Math.max((endFloat - startFloat) * PX_PER_HOUR - 4, 24)
+                  // block สั้น (< 44px) → layout แนวนอน, font เล็ก, padding น้อย
+                  const isCompact = height < 44
+                  const timeLabel = `${start.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} – ${end.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        ...s.bookedBlock,
+                        ...(isCompact ? s.bookedBlockCompact : {}),
+                        top: top + 2 + TOP_PAD,
+                        height,
+                      }}
+                    >
+                      <span style={isCompact ? s.bookedNameCompact : s.bookedName}>
+                        Reserved
+                      </span>
+                      <span style={isCompact ? s.bookedTimeCompact : s.bookedTime}>
+                        {timeLabel}
+                      </span>
+                    </div>
+                  )
+                })}
+
+                {showNow && (
+                  <div
+                    style={{
+                      ...s.nowLine,
+                      top: (nowHourFloat - FIRST_HOUR) * PX_PER_HOUR + TOP_PAD,
+                    }}
+                  >
+                    <div style={s.nowDot} />
+                    <div style={s.nowBar} />
+                    <span style={s.nowLabel}>
+                      {today.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </main>
       </div>
 
@@ -287,11 +373,11 @@ function Calendar() {
                 <h3 style={s.modalTitle}>จองห้องประชุม</h3>
                 <p style={s.modalSub}>
                   {selectedDate.getDate()} {MONTHS[selectedDate.getMonth()]} {selectedDate.getFullYear() + 543}
-                  {' · '}
-                  เริ่ม {String(modalHour).padStart(2,'0')}:00
                 </p>
               </div>
-              <button style={s.closeBtn} className="ku-close" onClick={closeModal}>✕</button>
+              <button style={s.closeBtn} className="ku-close" onClick={closeModal}>
+                <X size={18} />
+              </button>
             </div>
 
             <div style={s.modalBody}>
@@ -310,8 +396,14 @@ function Calendar() {
 
               <div style={s.row}>
                 <div style={{ ...s.field, flex: 1 }}>
-                  <label style={s.label}>เวลาเริ่ม</label>
-                  <div style={s.staticTime}>{String(modalHour).padStart(2,'0')}:00</div>
+                  <label style={s.label}>เวลาเริ่ม <span style={s.req}>*</span></label>
+                  <input
+                    style={s.input}
+                    type="time"
+                    value={modalForm.startTime}
+                    onChange={e => setModalForm({ ...modalForm, startTime: e.target.value })}
+                    disabled={modalSuccess}
+                  />
                 </div>
                 <div style={{ ...s.field, flex: 1 }}>
                   <label style={s.label}>เวลาสิ้นสุด <span style={s.req}>*</span></label>
@@ -319,8 +411,6 @@ function Calendar() {
                     style={s.input}
                     type="time"
                     value={modalForm.endTime}
-                    min={`${String(modalHour).padStart(2,'0')}:00`}
-                    max={`${String(modalHour).padStart(2,'0')}:40`}
                     onChange={e => setModalForm({ ...modalForm, endTime: e.target.value })}
                     disabled={modalSuccess}
                   />
@@ -330,9 +420,9 @@ function Calendar() {
               {modalDuration !== null && (
                 <div style={{
                   ...s.durationBox,
-                  background: modalOverLimit ? '#fff0f0' : '#f1f8f1',
-                  color: modalOverLimit ? '#c62828' : '#2e7d32',
-                  borderColor: modalOverLimit ? '#ffcccc' : '#c8e6c9',
+                  background: modalOverLimit ? '#fff0f0' : '#F0FBF6',
+                  color: modalOverLimit ? '#c62828' : '#1FBA7C',
+                  borderColor: modalOverLimit ? '#ffcccc' : '#B5E8D2',
                 }}>
                   <span style={{ fontWeight: 600 }}>ระยะเวลา:</span>
                   <span>{modalDuration} นาที</span>
@@ -346,14 +436,14 @@ function Calendar() {
 
               {modalError && (
                 <div style={s.error}>
-                  <span style={s.errIcon}>⚠</span>
+                  <AlertCircle size={16} style={s.errIcon} />
                   <span>{modalError}</span>
                 </div>
               )}
 
               {modalSuccess && (
                 <div style={s.success}>
-                  <div style={s.successCheck}>✓</div>
+                  <div style={s.successCheck}><Check size={16} strokeWidth={3} /></div>
                   <div>
                     <strong>จองสำเร็จ!</strong>
                     <p style={s.successText}>กรุณาตรวจสอบอีเมลของคุณ</p>
@@ -408,13 +498,11 @@ function Calendar() {
         .ku-day-cell:hover:not([data-past]) {
           background: var(--ku-green-100);
         }
-        .ku-slot-free {
-          transition: transform 0.15s var(--ease), box-shadow 0.2s var(--ease), border-color 0.15s var(--ease);
+        .ku-hour-row:hover {
+          background: #F0FBF6;
         }
-        .ku-slot-free:hover {
-          transform: translateX(4px);
-          border-color: #2e7d32 !important;
-          box-shadow: 0 4px 16px rgba(46, 125, 50, 0.15);
+        .ku-hour-row:hover > span {
+          opacity: 1 !important;
         }
         .ku-close {
           transition: background 0.15s var(--ease), color 0.15s var(--ease);
@@ -434,7 +522,7 @@ function Calendar() {
         }
         .ku-confirm-btn:not(:disabled):hover {
           transform: translateY(-1px);
-          box-shadow: 0 8px 24px rgba(13, 61, 24, 0.3);
+          box-shadow: 0 8px 24px rgba(1, 74, 50, 0.3);
         }
       `}</style>
     </div>
@@ -451,32 +539,34 @@ const s = {
   },
   monthNav: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
   arrow: {
-    background: '#f1f8f1', width: 32, height: 32, borderRadius: 8,
-    fontSize: 20, color: '#2e7d32', fontWeight: 600,
+    background: '#F0FBF6', width: 32, height: 32, borderRadius: 8,
+    fontSize: 20, color: '#1FBA7C', fontWeight: 600,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
-  monthLabel: { fontSize: 16, fontWeight: 600, color: '#1b5e20' },
+  monthLabel: { fontSize: 16, fontWeight: 600, color: '#03A96B' },
   year: { color: '#888', fontWeight: 500, fontSize: 14, marginLeft: 4 },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 },
   dayName: { textAlign: 'center', fontSize: 11, fontWeight: 600, padding: '6px 0', textTransform: 'uppercase', letterSpacing: 0.5 },
   dayCell: {
     textAlign: 'center', padding: '9px 0', borderRadius: 8,
-    fontSize: 13, cursor: 'pointer', color: '#333', fontWeight: 500,
+    fontSize: 13, cursor: 'pointer', color: '#1a1a1a', fontWeight: 600,
     position: 'relative',
   },
   selectedDay: {
-    background: 'linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%)',
+    background: 'linear-gradient(135deg, #1FBA7C 0%, #03A96B 100%)',
     color: 'white', fontWeight: 700,
-    boxShadow: '0 2px 8px rgba(46, 125, 50, 0.3)',
+    boxShadow: '0 2px 8px rgba(3, 169, 107, 0.3)',
   },
-  todayCell: { background: '#fdf6dc', color: '#1b5e20', fontWeight: 700 },
-  pastCell: { color: '#ccc', cursor: 'pointer' },
+  todayCell: { background: '#fdf6dc', color: '#03A96B', fontWeight: 700 },
+  disabledCell: {
+    color: '#cfd4cf', cursor: 'not-allowed', fontWeight: 400,
+  },
   todayDot: {
     position: 'absolute', bottom: 3, left: '50%', transform: 'translateX(-50%)',
     width: 4, height: 4, borderRadius: '50%', background: '#c9a227',
   },
   statsBox: {
-    background: '#f1f8f1', borderRadius: 12, padding: '14px 16px',
+    background: '#F0FBF6', borderRadius: 12, padding: '14px 16px',
     display: 'flex', flexDirection: 'column', gap: 8,
   },
   statRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
@@ -491,42 +581,111 @@ const s = {
     marginBottom: 28, gap: 16,
   },
   mainTitle: {
-    fontSize: 24, fontWeight: 700, color: '#0d3d18',
+    fontSize: 24, fontWeight: 700, color: '#014A32',
     margin: 0, letterSpacing: '-0.5px',
   },
   mainSub: {
     fontSize: 13, color: '#888', margin: '6px 0 0',
     display: 'flex', alignItems: 'center', gap: 6,
   },
-  dot: { display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#43a047' },
-  timeline: { display: 'flex', flexDirection: 'column', gap: 8 },
-  slot: {
-    display: 'flex', alignItems: 'stretch',
-    borderRadius: 12, overflow: 'hidden',
-    border: '1.5px solid', minHeight: 64,
+  dot: { display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#4DD9A2' },
+  timeline: {
+    background: 'white', borderRadius: 14,
+    border: '1px solid #e6ebe6', overflow: 'hidden',
+    display: 'flex',
+    boxShadow: '0 1px 3px rgba(1, 74, 50, 0.04)',
   },
-  slotFree: { background: '#f1f8f1', borderColor: '#c8e6c9', cursor: 'pointer' },
-  slotBooked: { background: '#fff5f5', borderColor: '#ffcdd2', cursor: 'default' },
-  slotTimeBox: {
-    width: 80, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    borderRight: '1.5px solid currentColor', borderColor: 'inherit',
-    background: 'rgba(255,255,255,0.5)',
+  gutter: {
+    width: 76, flexShrink: 0,
+    background: '#fafbfa',
+    borderRight: '1px solid #e6ebe6',
+    paddingTop: TOP_PAD,
   },
-  slotTime: { fontSize: 15, fontWeight: 700, color: '#1b5e20' },
-  slotContent: {
-    flex: 1, padding: '12px 20px',
-    display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 4,
+  gutterCell: {
+    height: 64, position: 'relative',
+    paddingRight: 12, paddingTop: 0,
+    display: 'flex', justifyContent: 'flex-end',
   },
-  slotTitleBox: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
-  slotBadge: {
-    background: '#c62828', color: 'white',
-    fontSize: 10, fontWeight: 700, padding: '2px 8px',
-    borderRadius: 10, letterSpacing: 0.5,
+  gutterTime: {
+    fontSize: 11, fontWeight: 600, color: '#94a3a3',
+    letterSpacing: 0.4,
+    transform: 'translateY(-7px)',
   },
-  slotTitle: { fontSize: 14, fontWeight: 600, color: '#c62828' },
-  slotDuration: { fontSize: 12, color: '#a64545' },
-  slotAvail: {
-    fontSize: 13, color: '#388e3c', fontWeight: 500,
+  tracks: {
+    flex: 1, position: 'relative',
+    paddingRight: 14, paddingLeft: 14, paddingTop: TOP_PAD,
+    minHeight: PX_PER_HOUR * (HOURS.length - 1) + 28 + TOP_PAD,
+  },
+  hourRow: {
+    height: PX_PER_HOUR, position: 'relative',
+    borderTop: '1px dashed #eef2ee',
+    display: 'flex', alignItems: 'center',
+    transition: 'background 0.15s var(--ease)',
+  },
+  hourCue: {
+    fontSize: 12, color: '#03A96B', fontWeight: 600,
+    opacity: 0, transition: 'opacity 0.15s var(--ease)',
+    pointerEvents: 'none',
+    paddingLeft: 12,
+  },
+  bookedBlock: {
+    position: 'absolute', left: 8, right: 8,
+    background: '#fff5f5',
+    border: '1px solid #fecaca',
+    borderLeft: '3px solid #dc2626',
+    borderRadius: 8, padding: '6px 12px',
+    display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2,
+    boxShadow: '0 1px 2px rgba(220, 38, 38, 0.06), 0 4px 10px rgba(15, 23, 42, 0.04)',
+    overflow: 'hidden', cursor: 'default',
+    zIndex: 2,
+    minWidth: 0,
+  },
+  bookedBlockCompact: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: '2px 10px',
+  },
+  bookedName: {
+    fontSize: 13, fontWeight: 600, color: '#9f1239',
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+    flexShrink: 0,
+  },
+  bookedNameCompact: {
+    fontSize: 11, fontWeight: 700, color: '#9f1239',
+    whiteSpace: 'nowrap', flexShrink: 0,
+    letterSpacing: 0.2,
+  },
+  bookedTime: {
+    fontSize: 11, color: '#94a3b8', fontWeight: 500,
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  },
+  bookedTimeCompact: {
+    fontSize: 10, color: '#94a3b8', fontWeight: 500,
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+    minWidth: 0,
+  },
+  nowLine: {
+    position: 'absolute', left: 0, right: 0,
+    pointerEvents: 'none', zIndex: 3,
+    display: 'flex', alignItems: 'center',
+    height: 0,
+  },
+  nowDot: {
+    width: 9, height: 9, borderRadius: '50%',
+    background: '#f59e0b',
+    boxShadow: '0 0 0 3px rgba(245, 158, 11, 0.18)',
+    flexShrink: 0,
+    marginLeft: -4,
+  },
+  nowBar: {
+    flex: 1, height: 1.5, background: '#f59e0b',
+    opacity: 0.85,
+  },
+  nowLabel: {
+    background: '#f59e0b', color: 'white',
+    fontSize: 10, fontWeight: 700,
+    padding: '2px 7px', borderRadius: 10,
+    marginLeft: 6, letterSpacing: 0.3, flexShrink: 0,
+    boxShadow: '0 1px 4px rgba(245, 158, 11, 0.35)',
   },
   loadingBox: {
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
@@ -534,13 +693,13 @@ const s = {
   },
   spinner: {
     width: 28, height: 28, borderRadius: '50%',
-    border: '3px solid #e1e7e1', borderTopColor: '#2e7d32',
+    border: '3px solid #e1e7e1', borderTopColor: '#1FBA7C',
     animation: 'spin 0.8s linear infinite',
   },
 
   overlay: {
     position: 'fixed', inset: 0,
-    background: 'rgba(13, 61, 24, 0.45)',
+    background: 'rgba(1, 74, 50, 0.45)',
     backdropFilter: 'blur(4px)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     zIndex: 100, padding: 20,
@@ -548,7 +707,7 @@ const s = {
   },
   modal: {
     background: 'white', borderRadius: 18, width: '100%', maxWidth: 480,
-    boxShadow: '0 24px 60px rgba(13, 61, 24, 0.35), 0 8px 24px rgba(13, 61, 24, 0.15)',
+    boxShadow: '0 24px 60px rgba(1, 74, 50, 0.35), 0 8px 24px rgba(1, 74, 50, 0.15)',
     overflow: 'hidden',
   },
   modalHeader: {
@@ -556,10 +715,10 @@ const s = {
     padding: '24px 28px 20px',
     borderBottom: '1px solid #f0f0f0',
   },
-  modalTitle: { fontSize: 20, fontWeight: 700, color: '#0d3d18', margin: 0 },
+  modalTitle: { fontSize: 20, fontWeight: 700, color: '#014A32', margin: 0 },
   modalSub: { fontSize: 13, color: '#666', margin: '4px 0 0' },
   closeBtn: {
-    width: 32, height: 32, borderRadius: 8, fontSize: 16,
+    width: 32, height: 32, borderRadius: 8,
     color: '#888', background: 'transparent',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
@@ -591,21 +750,21 @@ const s = {
     padding: '12px 14px', borderRadius: 10, fontSize: 13,
     marginTop: 12, display: 'flex', alignItems: 'center', gap: 10,
   },
-  errIcon: { fontSize: 16 },
+  errIcon: { color: '#cc3333', flexShrink: 0 },
   success: {
-    background: 'linear-gradient(135deg, #f1f8f1 0%, #e8f5e9 100%)',
-    border: '1px solid #b3dfc0', color: '#1b5e20',
+    background: 'linear-gradient(135deg, #F0FBF6 0%, #D9F5E7 100%)',
+    border: '1px solid #88E0BB', color: '#03A96B',
     padding: '14px 16px', borderRadius: 12, fontSize: 13,
     marginTop: 12, display: 'flex', alignItems: 'center', gap: 14,
   },
   successCheck: {
     width: 30, height: 30, borderRadius: '50%',
-    background: '#2e7d32', color: 'white',
+    background: '#1FBA7C', color: 'white',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     fontSize: 15, fontWeight: 700, flexShrink: 0,
     animation: 'pulseGlow 1.5s var(--ease) infinite',
   },
-  successText: { fontSize: 12, color: '#2d7a3e', margin: '2px 0 0' },
+  successText: { fontSize: 12, color: '#028152', margin: '2px 0 0' },
   modalFooter: {
     display: 'flex', gap: 10, padding: '16px 28px 24px',
     borderTop: '1px solid #f0f0f0',
@@ -618,11 +777,11 @@ const s = {
   },
   confirmBtn: {
     flex: 2, padding: '12px 0',
-    background: 'linear-gradient(135deg, #1b5e20 0%, #134d20 100%)',
+    background: 'linear-gradient(135deg, #03A96B 0%, #028152 100%)',
     color: 'white', borderRadius: 10,
     fontSize: 14, fontWeight: 600,
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-    boxShadow: '0 4px 14px rgba(13, 61, 24, 0.25)',
+    boxShadow: '0 4px 14px rgba(1, 74, 50, 0.25)',
   },
   btnSpinner: {
     width: 14, height: 14, borderRadius: '50%',

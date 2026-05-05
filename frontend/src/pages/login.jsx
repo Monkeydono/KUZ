@@ -6,10 +6,13 @@ function Login() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
+    const hash = window.location.hash.replace(/^#/, '')
+    if (!hash) return
+    const params = new URLSearchParams(hash)
     const token = params.get('token')
     if (token) {
       localStorage.setItem('token', token)
+      window.history.replaceState(null, '', window.location.pathname)
       navigate('/calendar')
     }
   }, [navigate])
@@ -30,21 +33,6 @@ function Login() {
             ระบบจองห้องประชุม Zoom<br />
             <span style={s.taglineAccent}>มหาวิทยาลัยเกษตรศาสตร์</span>
           </p>
-
-          <div style={s.featureList}>
-            <div style={s.feature}>
-              <div style={s.featureIcon}>✓</div>
-              <span>จองง่าย รวดเร็ว ผ่านระบบออนไลน์</span>
-            </div>
-            <div style={s.feature}>
-              <div style={s.featureIcon}>✓</div>
-              <span>สร้าง Zoom Meeting อัตโนมัติ</span>
-            </div>
-            <div style={s.feature}>
-              <div style={s.featureIcon}>✓</div>
-              <span>แจ้งเตือนผ่านอีเมลของมหาวิทยาลัย</span>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -95,8 +83,8 @@ function Login() {
         }
         .ku-google-btn:hover {
           transform: translateY(-1px);
-          box-shadow: 0 8px 20px rgba(13, 61, 24, 0.3) !important;
-          background: linear-gradient(135deg, #2e7d32 0%, #134d20 100%) !important;
+          box-shadow: 0 8px 20px rgba(1, 74, 50, 0.3) !important;
+          background: linear-gradient(135deg, #1FBA7C 0%, #028152 100%) !important;
         }
         .ku-google-btn:active {
           transform: translateY(0);
@@ -112,13 +100,13 @@ const s = {
   },
   bgPattern: {
     position: 'absolute', inset: 0, opacity: 0.04, pointerEvents: 'none',
-    backgroundImage: `radial-gradient(circle at 20% 30%, #1b5e20 1px, transparent 1px),
-                      radial-gradient(circle at 80% 70%, #1b5e20 1px, transparent 1px)`,
+    backgroundImage: `radial-gradient(circle at 20% 30%, #03A96B 1px, transparent 1px),
+                      radial-gradient(circle at 80% 70%, #03A96B 1px, transparent 1px)`,
     backgroundSize: '40px 40px, 60px 60px',
   },
   left: {
     width: '50%', position: 'relative',
-    background: 'linear-gradient(135deg, #134d20 0%, #1b5e20 50%, #0d3d18 100%)',
+    background: 'linear-gradient(135deg, #028152 0%, #03A96B 50%, #014A32 100%)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     overflow: 'hidden',
   },
@@ -138,23 +126,7 @@ const s = {
     fontSize: 16, lineHeight: 1.7, opacity: 0.9, margin: '0 0 40px', color: '#fff',
   },
   taglineAccent: {
-    color: '#f1d878', fontWeight: 600,
-  },
-  featureList: {
-    display: 'flex', flexDirection: 'column', gap: 14, textAlign: 'left',
-    background: 'rgba(255,255,255,0.06)', backdropFilter: 'blur(8px)',
-    border: '1px solid rgba(255,255,255,0.1)',
-    padding: '20px 24px', borderRadius: 16,
-  },
-  feature: {
-    display: 'flex', alignItems: 'center', gap: 12,
-    fontSize: 14, color: 'rgba(255,255,255,0.95)',
-  },
-  featureIcon: {
-    width: 24, height: 24, borderRadius: '50%',
-    background: '#f1d878', color: '#1b5e20',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: 13, fontWeight: 700, flexShrink: 0,
+    color: '#fff', fontWeight: 600,
   },
   right: {
     flex: 1, background: '#f4f6f4',
@@ -165,16 +137,16 @@ const s = {
   card: {
     background: 'white', borderRadius: 20, padding: '48px 40px',
     width: '100%', maxWidth: 400,
-    boxShadow: '0 8px 28px rgba(13, 61, 24, 0.12), 0 2px 8px rgba(13, 61, 24, 0.06)',
+    boxShadow: '0 8px 28px rgba(1, 74, 50, 0.12), 0 2px 8px rgba(1, 74, 50, 0.06)',
     border: '1px solid #e1e7e1',
     position: 'relative',
   },
   cardBadge: {
     position: 'absolute', top: -12, left: 32,
-    background: 'linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%)',
+    background: 'linear-gradient(135deg, #03A96B 0%, #1FBA7C 100%)',
     color: '#fff', fontSize: 11, fontWeight: 600, letterSpacing: 1,
     padding: '6px 14px', borderRadius: 20,
-    boxShadow: '0 4px 12px rgba(13, 61, 24, 0.25)',
+    boxShadow: '0 4px 12px rgba(1, 74, 50, 0.25)',
     textTransform: 'uppercase',
   },
   heading: {
@@ -185,13 +157,13 @@ const s = {
     fontSize: 14, color: '#666', lineHeight: 1.7,
     margin: '0 0 28px',
   },
-  strong: { color: '#1b5e20', fontWeight: 600 },
+  strong: { color: '#03A96B', fontWeight: 600 },
   btn: {
     width: '100%', padding: '14px 0',
-    background: 'linear-gradient(135deg, #1b5e20 0%, #134d20 100%)',
+    background: 'linear-gradient(135deg, #03A96B 0%, #028152 100%)',
     color: 'white', borderRadius: 10, fontSize: 14, fontWeight: 600,
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-    boxShadow: '0 4px 12px rgba(13, 61, 24, 0.2)',
+    boxShadow: '0 4px 12px rgba(1, 74, 50, 0.2)',
   },
   divider: {
     display: 'flex', alignItems: 'center', gap: 12, margin: '24px 0 16px',
@@ -203,7 +175,7 @@ const s = {
     margin: 0, lineHeight: 1.8,
   },
   noteStrong: {
-    color: '#1b5e20', fontWeight: 600,
+    color: '#03A96B', fontWeight: 600,
   },
   copyright: {
     marginTop: 24, fontSize: 11, color: '#999', textAlign: 'center',
