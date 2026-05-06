@@ -22,7 +22,7 @@ function Calendar() {
   const [loading, setLoading] = useState(false)
 
   const [modalHour, setModalHour] = useState(null)
-  const [modalForm, setModalForm] = useState({ title: '', startTime: '', endTime: '' })
+  const [modalForm, setModalForm] = useState({ title: '', startTime: '', endTime: '', coHosts: '' })
   const [modalLoading, setModalLoading] = useState(false)
   const [modalError, setModalError] = useState('')
   const [modalSuccess, setModalSuccess] = useState(false)
@@ -106,6 +106,7 @@ function Calendar() {
       title: '',
       startTime: floatToHHMM(earliest),
       endTime: floatToHHMM(defaultEnd),
+      coHosts: '',
     })
     setModalError('')
     setModalSuccess(false)
@@ -131,10 +132,12 @@ function Calendar() {
     const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth()+1).padStart(2,'0')}-${String(selectedDate.getDate()).padStart(2,'0')}`
     const startTime = `${dateStr}T${modalForm.startTime}:00+07:00`
     const endTime   = `${dateStr}T${modalForm.endTime}:00+07:00`
+    const coHostEmails = modalForm.coHosts
+      .split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
 
     try {
       setModalLoading(true)
-      await api.post('/bookings', { title: modalForm.title, startTime, endTime })
+      await api.post('/bookings', { title: modalForm.title, startTime, endTime, coHostEmails })
       setModalSuccess(true)
       await fetchBookings(selectedDate)
       setTimeout(() => closeModal(), 1500)
@@ -415,6 +418,19 @@ function Calendar() {
                     disabled={modalSuccess}
                   />
                 </div>
+              </div>
+
+              <div style={s.field}>
+                <label style={s.label}>
+                  Co-host (อีเมล) <span style={{ color: '#888', fontWeight: 400, fontSize: 11 }}>— ไม่บังคับ</span>
+                </label>
+                <input
+                  style={s.input}
+                  placeholder="email1@ku.th, email2@ku.th"
+                  value={modalForm.coHosts}
+                  onChange={e => setModalForm({ ...modalForm, coHosts: e.target.value })}
+                  disabled={modalSuccess}
+                />
               </div>
 
               {modalDuration !== null && (

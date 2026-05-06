@@ -186,10 +186,8 @@ function MyBookings() {
 
                   {b.status === 'confirmed' && !isPast && (
                     <div style={s.cardBottom}>
-                      <a
-                        href={b.zoom_join_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={() => navigate(`/join/${b.id}`)}
                         style={s.zoomBtn}
                         className="ku-zoom-btn"
                       >
@@ -198,7 +196,7 @@ function MyBookings() {
                           <path d="M17 10l4-2v8l-4-2v-4z" fill="white"/>
                         </svg>
                         เข้าร่วม Zoom
-                      </a>
+                      </button>
                       {b.zoom_password && (
                         <div style={s.passBox}>
                           <span style={s.passLabel}>รหัส</span>

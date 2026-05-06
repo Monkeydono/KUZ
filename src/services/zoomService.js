@@ -1,8 +1,6 @@
 const axios = require('axios');
 require('dotenv').config();
 
-// Cache token in-memory — Zoom S2S token อายุ ~1 ชม.
-// refresh ก่อนหมด 1 นาทีเพื่อกัน race
 let cachedToken = null;
 let cachedExpiry = 0;
 
@@ -27,7 +25,7 @@ async function getZoomToken() {
   return cachedToken;
 }
 
-async function createMeeting({ title, startTime, durationMinutes }) {
+async function createMeeting({ title, startTime, durationMinutes, coHostEmails = [] }) {
   const token = await getZoomToken();
 
   const response = await axios.post(
@@ -39,8 +37,13 @@ async function createMeeting({ title, startTime, durationMinutes }) {
       duration:   durationMinutes,
       timezone:   'Asia/Bangkok',
       settings: {
-        join_before_host: true,
-        waiting_room:     false,
+        // กันคนเข้าก่อน host มาเปิดห้อง — ใช้ร่วมกับ /join page
+        // ที่ block ไม่ให้ user เข้าก่อนเวลาด้วย
+        join_before_host: false,
+        waiting_room:     true,
+        // ตั้ง co-host ผ่าน alternative_hosts (ต้อง Zoom Pro+ licensed)
+        // ถ้าใช้ Free จะถูก ignore — host ต้อง promote in-meeting แทน
+        alternative_hosts: coHostEmails.join(','),
       }
     },
     { headers: { Authorization: `Bearer ${token}` } }

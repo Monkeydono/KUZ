@@ -2,8 +2,9 @@ const axios = require('axios');
 require('dotenv').config();
 
 // รองรับทั้งชื่อใหม่ (NOTIFICATION) และชื่อเก่า (WEBHOOK) เผื่อ backwards compat
-const BOOKING_URL = process.env.N8N_NOTIFICATION_WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
-const CANCEL_URL = process.env.N8N_CANCELLATION_WEBHOOK_URL;
+const BOOKING_URL   = process.env.N8N_NOTIFICATION_WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
+const CANCEL_URL    = process.env.N8N_CANCELLATION_WEBHOOK_URL;
+const REMINDER_URL  = process.env.N8N_REMINDER_WEBHOOK_URL;
 
 async function sendWebhook(url, payload, label) {
   if (!url) {
@@ -49,4 +50,21 @@ async function sendCancellationNotification(booking) {
   }, 'booking_cancelled');
 }
 
-module.exports = { sendBookingConfirmation, sendCancellationNotification };
+async function sendReminderNotification(booking) {
+  await sendWebhook(REMINDER_URL, {
+    type:      'booking_reminder',
+    email:     booking.user_email,
+    name:      booking.user_name,
+    title:     booking.title,
+    date:      formatDate(booking.start_time),
+    time:      `${formatTime(booking.start_time)} - ${formatTime(booking.end_time)}`,
+    zoom_link: booking.zoom_join_url,
+    minutes_until: 15,
+  }, 'booking_reminder');
+}
+
+module.exports = {
+  sendBookingConfirmation,
+  sendCancellationNotification,
+  sendReminderNotification,
+};

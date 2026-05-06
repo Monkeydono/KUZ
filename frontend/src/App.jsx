@@ -4,6 +4,8 @@ import Login from './pages/login'
 import Book from './pages/book'
 import MyBookings from './pages/my-bookings'
 import Calendar from './pages/calendar'
+import Join from './pages/join'
+import Admin from './pages/admin'
 
 // อ่าน token จาก URL fragment (#token=...) ไม่ใช่ query string
 // fragment ไม่ติด server log / Referer header
@@ -45,6 +47,8 @@ function App() {
       <Route path="/calendar" element={<PrivateRoute><Calendar /></PrivateRoute>} />
       <Route path="/book" element={<PrivateRoute><Book /></PrivateRoute>} />
       <Route path="/my-bookings" element={<PrivateRoute><MyBookings /></PrivateRoute>} />
+      <Route path="/join/:id" element={<PrivateRoute><Join /></PrivateRoute>} />
+      <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
     </Routes>
   )
 }

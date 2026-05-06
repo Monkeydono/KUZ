@@ -3,8 +3,6 @@ const router = express.Router();
 const bookingService = require('../services/bookingService');
 const pool = require('../../config/db');
 
-// GET /bookings/available?date=2026-04-30 — ส่งแค่ช่วงเวลาที่ถูกจอง
-// ไม่ส่ง title เพราะอาจมีข้อมูลส่วนตัว
 router.get('/available', async (req, res, next) => {
   try {
     const { date } = req.query;
@@ -21,7 +19,6 @@ router.get('/available', async (req, res, next) => {
   }
 });
 
-// GET /bookings — รายการจองของตัวเอง
 router.get('/', async (req, res, next) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit, 10) || 50, 200);
@@ -35,13 +32,15 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { title, startTime, endTime } = req.body;
+    const { title, startTime, endTime, coHostEmails } = req.body;
     const booking = await bookingService.createBooking({
-      userId: req.user.id,
-      userRole: req.user.role,
+      userId:    req.user.id,
+      userEmail: req.user.email,
+      userRole:  req.user.role,
       title,
       startTime,
       endTime,
+      coHostEmails,
     });
     res.status(201).json(booking);
   } catch (err) {
@@ -54,6 +53,19 @@ router.delete('/:id', async (req, res, next) => {
     const result = await bookingService.cancelBooking(req.params.id, req.user.id, req.user.role);
     res.json(result);
   } catch (err) {
+    next(err);
+  }
+});
+
+// GET /bookings/:id/join — เช็ค permission + เวลา → ส่ง zoom URL
+router.get('/:id/join', async (req, res, next) => {
+  try {
+    const info = await bookingService.getJoinInfo(req.params.id, req.user);
+    res.json(info);
+  } catch (err) {
+    if (err.status === 425) {
+      return res.status(425).json({ error: err.message, startsAt: err.startsAt });
+    }
     next(err);
   }
 });

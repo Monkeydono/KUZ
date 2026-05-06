@@ -28,6 +28,7 @@ function Book() {
     date: formatToDDMMYYYY(searchParams.get('date')) || '',
     startTime: searchParams.get('startTime') || '',
     endTime: '',
+    coHosts: '',
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -71,12 +72,14 @@ function Book() {
 
     const startTime = `${dateISO}T${form.startTime}:00+07:00`
     const endTime   = `${dateISO}T${form.endTime}:00+07:00`
+    const coHostEmails = form.coHosts
+      .split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
 
     try {
       setLoading(true)
-      await api.post('/bookings', { title: form.title, startTime, endTime })
+      await api.post('/bookings', { title: form.title, startTime, endTime, coHostEmails })
       setSuccess(true)
-      setForm({ title: '', date: '', startTime: '', endTime: '' })
+      setForm({ title: '', date: '', startTime: '', endTime: '', coHosts: '' })
     } catch (err) {
       setError(err.response?.data?.error || 'เกิดข้อผิดพลาด กรุณาลองใหม่')
     } finally {
@@ -230,6 +233,18 @@ function Book() {
               </div>
             </div>
 
+            <div style={s.field}>
+              <label style={s.label}>
+                Co-host (อีเมล, คั่นด้วย comma) <span style={s.optional}>— ไม่บังคับ</span>
+              </label>
+              <input
+                style={s.input}
+                placeholder="email1@ku.th, email2@ku.th"
+                value={form.coHosts}
+                onChange={e => setForm({ ...form, coHosts: e.target.value })}
+              />
+            </div>
+
             {duration !== null && (
               <div style={{
                 ...s.durationBox,
@@ -343,6 +358,7 @@ const s = {
     color: '#333', marginBottom: 8,
   },
   req: { color: '#c62828' },
+  optional: { color: '#888', fontWeight: 400, fontSize: 11 },
   input: {
     width: '100%', padding: '12px 14px',
     border: '1.5px solid #dde3dd', borderRadius: 10,

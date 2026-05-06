@@ -2,10 +2,12 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { X } from 'lucide-react'
 import KUEmblem from './KUEmblem'
+import { useUser } from '../useUser'
 
 function Navbar() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { isAdmin } = useUser()
   const [showLogout, setShowLogout] = useState(false)
 
   const isActive = (path) => location.pathname === path
@@ -20,6 +22,7 @@ function Navbar() {
     { path: '/calendar',    label: 'ปฏิทิน' },
     { path: '/book',        label: 'จองห้อง' },
     { path: '/my-bookings', label: 'การจองของฉัน' },
+    ...(isAdmin ? [{ path: '/admin', label: 'Admin' }] : []),
   ]
 
   return (
