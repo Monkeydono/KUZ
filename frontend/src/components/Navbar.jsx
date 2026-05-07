@@ -1,14 +1,27 @@
 import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, Menu } from 'lucide-react'
 import KUEmblem from './KUEmblem'
 import { useUser } from '../useUser'
+import { useIsMobile } from '../useIsMobile'
+
+function getGreeting() {
+  const h = new Date().getHours()
+  if (h >= 5  && h < 12) return 'สวัสดีตอนเช้า'
+  if (h >= 12 && h < 18) return 'สวัสดีตอนบ่าย'
+  if (h >= 18 && h < 23) return 'สวัสดีตอนเย็น'
+  return 'สวัสดีตอนดึก'
+}
 
 function Navbar() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { isAdmin } = useUser()
+  const { user, isAdmin } = useUser()
+  const isMobile = useIsMobile()
   const [showLogout, setShowLogout] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  const firstName = user?.name?.split(' ')[0] || ''
 
   const isActive = (path) => location.pathname === path
 
@@ -26,7 +39,7 @@ function Navbar() {
   ]
 
   return (
-    <nav style={s.nav}>
+    <nav style={{ ...s.nav, padding: isMobile ? '0 16px' : '0 40px' }}>
       <div style={s.navLeft}>
         <div
           style={s.logoBtn}
@@ -34,34 +47,80 @@ function Navbar() {
           onClick={() => navigate('/calendar')}
         >
           <div style={s.logoMark}>
-            <KUEmblem size={42} variant="dark" />
+            <KUEmblem size={isMobile ? 36 : 42} variant="dark" />
           </div>
           <div style={s.brandWrap}>
-            <span style={s.navBrand}>KU Zoom Booking</span>
-            <span style={s.navSub}>มหาวิทยาลัยเกษตรศาสตร์</span>
+            <span style={{ ...s.navBrand, fontSize: isMobile ? 14 : 17 }}>KU Zoom Booking</span>
+            {!isMobile && <span style={s.navSub}>มหาวิทยาลัยเกษตรศาสตร์</span>}
           </div>
         </div>
       </div>
 
-      <div style={s.navLinks}>
-        {links.map(link => (
-          <span
-            key={link.path}
-            style={{
-              ...s.navLink,
-              ...(isActive(link.path) ? s.navLinkActive : {}),
-            }}
-            className="ku-nav-link"
-            onClick={() => navigate(link.path)}
+      {isMobile ? (
+        <>
+          <button
+            onClick={() => setMenuOpen(o => !o)}
+            style={s.hamburger}
+            aria-label="menu"
           >
-            {link.label}
-            {isActive(link.path) && <div style={s.activeDot} />}
+            <Menu size={22} />
+          </button>
+          {menuOpen && (
+            <div style={s.mobileMenu} onClick={() => setMenuOpen(false)}>
+              <div style={s.mobileMenuPanel} onClick={e => e.stopPropagation()}>
+                {firstName && (
+                  <div style={s.mobileGreeting}>
+                    {getGreeting()}, <strong>{firstName}</strong>
+                  </div>
+                )}
+                {links.map(link => (
+                  <button
+                    key={link.path}
+                    style={{
+                      ...s.mobileMenuItem,
+                      ...(isActive(link.path) ? s.mobileMenuItemActive : {}),
+                    }}
+                    onClick={() => { navigate(link.path); setMenuOpen(false) }}
+                  >
+                    {link.label}
+                  </button>
+                ))}
+                <button
+                  style={s.mobileMenuLogout}
+                  onClick={() => { setMenuOpen(false); setShowLogout(true) }}
+                >
+                  ออกจากระบบ
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={s.navLinks}>
+          {firstName && (
+            <span style={s.greeting}>
+              {getGreeting()}, <strong>{firstName}</strong>
+            </span>
+          )}
+          {links.map(link => (
+            <span
+              key={link.path}
+              style={{
+                ...s.navLink,
+                ...(isActive(link.path) ? s.navLinkActive : {}),
+              }}
+              className="ku-nav-link"
+              onClick={() => navigate(link.path)}
+            >
+              {link.label}
+              {isActive(link.path) && <div style={s.activeDot} />}
+            </span>
+          ))}
+          <span style={s.navBtn} className="ku-nav-btn" onClick={() => setShowLogout(true)}>
+            ออกจากระบบ
           </span>
-        ))}
-        <span style={s.navBtn} className="ku-nav-btn" onClick={() => setShowLogout(true)}>
-          ออกจากระบบ
-        </span>
-      </div>
+        </div>
+      )}
 
       {showLogout && (
         <div style={s.overlay} onClick={() => setShowLogout(false)}>
@@ -134,6 +193,17 @@ const s = {
     color: 'rgba(255, 255, 255, 0.7)', fontSize: 11, fontWeight: 400, marginTop: 2,
   },
   navLinks: { display: 'flex', alignItems: 'center', gap: 8 },
+  greeting: {
+    color: 'rgba(255,255,255,0.85)', fontSize: 13,
+    marginRight: 12, paddingRight: 16,
+    borderRight: '1px solid rgba(255,255,255,0.2)',
+  },
+  mobileGreeting: {
+    padding: '10px 14px 12px',
+    fontSize: 14, color: '#014A32',
+    borderBottom: '1px solid #f0f0f0',
+    marginBottom: 4,
+  },
   navLink: {
     color: 'rgba(255,255,255,0.75)', cursor: 'pointer',
     fontSize: 14, fontWeight: 500,
@@ -155,6 +225,39 @@ const s = {
     background: 'rgba(255,255,255,0.12)', padding: '8px 18px',
     borderRadius: 20, border: '1px solid rgba(241, 216, 120, 0.25)',
     marginLeft: 12,
+  },
+  hamburger: {
+    color: 'white', background: 'rgba(255,255,255,0.12)',
+    border: '1px solid rgba(241, 216, 120, 0.25)', borderRadius: 8,
+    width: 38, height: 38,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    cursor: 'pointer',
+  },
+  mobileMenu: {
+    position: 'fixed', top: 60, left: 0, right: 0, bottom: 0,
+    background: 'rgba(1, 74, 50, 0.45)',
+    zIndex: 90, animation: 'fadeIn 0.2s var(--ease)',
+  },
+  mobileMenuPanel: {
+    background: 'white', margin: '0 16px',
+    borderRadius: 14, padding: 12,
+    boxShadow: '0 12px 32px rgba(1, 74, 50, 0.2)',
+    display: 'flex', flexDirection: 'column', gap: 4,
+  },
+  mobileMenuItem: {
+    padding: '12px 14px', textAlign: 'left',
+    background: 'transparent', border: 'none',
+    borderRadius: 8, fontSize: 14, color: '#1a1a1a',
+    cursor: 'pointer',
+  },
+  mobileMenuItemActive: {
+    background: '#F0FBF6', color: '#03A96B', fontWeight: 600,
+  },
+  mobileMenuLogout: {
+    marginTop: 6, padding: '12px 14px',
+    background: '#fff0f0', color: '#c62828',
+    border: '1px solid #ffcccc', borderRadius: 8,
+    fontSize: 14, fontWeight: 600, cursor: 'pointer',
   },
   overlay: {
     position: 'fixed', inset: 0,

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { AlertCircle, Check, X } from 'lucide-react'
 import api from '../api'
 import { useUser } from '../useUser'
+import { useIsMobile } from '../useIsMobile'
 import Navbar from '../components/Navbar'
 
 const FIRST_HOUR = 8
@@ -13,7 +14,9 @@ const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
 
 function Calendar() {
-  const { isAdmin } = useUser()
+  const { user, isAdmin } = useUser()
+  const isMobile = useIsMobile()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const today = new Date()
 
   const [currentDate, setCurrentDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
@@ -164,13 +167,13 @@ function Calendar() {
   const todayStart = new Date(today)
   todayStart.setHours(0, 0, 0, 0)
   const maxBookableDate = new Date(todayStart)
-  maxBookableDate.setDate(todayStart.getDate() + 7)
+  maxBookableDate.setDate(todayStart.getDate() + 30)
 
   const isBookable = (day) => {
     const cellDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), day)
     cellDate.setHours(0, 0, 0, 0)
     if (cellDate < todayStart) return false
-    // admin จองล่วงหน้าได้ไม่จำกัด, student จำกัด 7 วัน
+    // admin จองล่วงหน้าได้ไม่จำกัด, student จำกัด 30 วัน
     return isAdmin || cellDate <= maxBookableDate
   }
 
@@ -196,8 +199,34 @@ function Calendar() {
     <div style={s.root}>
       <Navbar />
 
-      <div style={s.body}>
-        <aside style={s.sidebar} className="fade-in">
+      {user && user.has_calendar === false && (
+        <div style={s.calendarBanner}>
+          เพื่อให้ระบบเพิ่มการจองลง Google Calendar ของคุณอัตโนมัติ
+          กรุณา <strong>ออกจากระบบและ login ใหม่</strong>
+          เพื่ออนุญาตสิทธิ์ Calendar (ครั้งเดียว)
+        </div>
+      )}
+      <div style={{ ...s.body, flexDirection: isMobile ? 'column' : 'row' }}>
+        {isMobile && (
+          <button
+            style={s.sidebarToggle}
+            onClick={() => setSidebarOpen(o => !o)}
+          >
+            {sidebarOpen ? 'ซ่อนปฏิทินเดือน' : 'เลือกวัน / ดูปฏิทินเดือน'}
+          </button>
+        )}
+        <aside
+          style={{
+            ...s.sidebar,
+            ...(isMobile ? {
+              width: '100%',
+              borderRight: 'none',
+              borderBottom: '1px solid #e1e7e1',
+              display: sidebarOpen ? 'flex' : 'none',
+            } : {}),
+          }}
+          className="fade-in"
+        >
           <div style={s.monthNav}>
             <button
               style={s.arrow}
@@ -272,7 +301,13 @@ function Calendar() {
           </div>
         </aside>
 
-        <main style={s.main} className="fade-in">
+        <main
+          style={{
+            ...s.main,
+            padding: isMobile ? '20px 16px' : '32px 40px',
+          }}
+          className="fade-in"
+        >
           <div style={s.mainHeader}>
             <div>
               <h2 style={s.mainTitle}>
@@ -337,24 +372,35 @@ function Calendar() {
                   const startFloat = start.getHours() + start.getMinutes() / 60
                   const endFloat = end.getHours() + end.getMinutes() / 60
                   const top = (startFloat - FIRST_HOUR) * PX_PER_HOUR
-                  // ไม่ clamp ใหญ่ — กัน block 15 นาทียื่นทับ block 30 นาทีถัดไป
                   const rawHeight = (endFloat - startFloat) * PX_PER_HOUR
                   const height = Math.max(rawHeight - 2, 14)
-                  // block สั้น (< 44px) → layout แนวนอน, font เล็ก, padding น้อย
                   const isCompact = height < 44
                   const timeLabel = `${start.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} – ${end.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`
+
+                  // 3 รูปแบบ: ของตัวเอง / co-host / คนอื่น
+                  const variant = slot.is_mine    ? s.bookedVariantMine
+                                : slot.is_co_host ? s.bookedVariantCoHost
+                                : s.bookedVariantOther
+                  const label = slot.is_mine    ? 'Your Reserving'
+                              : slot.is_co_host ? 'Your Reserving (Co-Host)'
+                              : 'Reserved'
+
                   return (
                     <div
                       key={i}
                       style={{
                         ...s.bookedBlock,
+                        ...variant,
                         ...(isCompact ? s.bookedBlockCompact : {}),
                         top: top + 2 + TOP_PAD,
                         height,
                       }}
                     >
-                      <span style={isCompact ? s.bookedNameCompact : s.bookedName}>
-                        Reserved
+                      <span style={{
+                        ...(isCompact ? s.bookedNameCompact : s.bookedName),
+                        color: variant.nameColor,
+                      }}>
+                        {label}
                       </span>
                       <span style={isCompact ? s.bookedTimeCompact : s.bookedTime}>
                         {timeLabel}
@@ -563,6 +609,18 @@ function Calendar() {
 const s = {
   root: { minHeight: '100vh', background: '#f4f6f4' },
   body: { display: 'flex', minHeight: 'calc(100vh - 68px)' },
+  calendarBanner: {
+    background: '#fff8e1', borderBottom: '1px solid #fde68a',
+    color: '#92400e', padding: '10px 20px',
+    fontSize: 13, textAlign: 'center', lineHeight: 1.5,
+  },
+  sidebarToggle: {
+    margin: '12px 16px 0',
+    padding: '10px 14px',
+    background: 'white', color: '#03A96B',
+    border: '1.5px solid #B5E8D2', borderRadius: 10,
+    fontSize: 13, fontWeight: 600, cursor: 'pointer',
+  },
   sidebar: {
     width: 320, background: 'white', padding: '28px 24px',
     borderRight: '1px solid #e1e7e1', display: 'flex',
@@ -679,6 +737,27 @@ const s = {
   bookedBlockCompact: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     padding: '0 8px',
+  },
+  // คนอื่นจอง — แดง (เดิม)
+  bookedVariantOther: {
+    background: '#fff5f5',
+    border: '1px solid #fecaca',
+    borderLeft: '3px solid #dc2626',
+    nameColor: '#9f1239',
+  },
+  // เราเป็น co-host — น้ำเงิน
+  bookedVariantCoHost: {
+    background: '#eff6ff',
+    border: '1px solid #bfdbfe',
+    borderLeft: '3px solid #2563eb',
+    nameColor: '#1e40af',
+  },
+  // เราเป็นเจ้าของ — เขียว
+  bookedVariantMine: {
+    background: '#ecfdf5',
+    border: '1px solid #a7f3d0',
+    borderLeft: '3px solid #059669',
+    nameColor: '#065f46',
   },
   bookedName: {
     fontSize: 13, fontWeight: 600, color: '#9f1239',

@@ -29,6 +29,9 @@ function Book() {
     startTime: searchParams.get('startTime') || '',
     endTime: '',
     coHosts: '',
+    recurringEnabled: false,
+    recurringFreq: 'weekly',
+    recurringCount: 4,
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -75,11 +78,19 @@ function Book() {
     const coHostEmails = form.coHosts
       .split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
 
+    const payload = { title: form.title, startTime, endTime, coHostEmails }
+    if (form.recurringEnabled && form.recurringCount > 1) {
+      payload.recurring = { freq: form.recurringFreq, count: parseInt(form.recurringCount, 10) }
+    }
+
     try {
       setLoading(true)
-      await api.post('/bookings', { title: form.title, startTime, endTime, coHostEmails })
+      await api.post('/bookings', payload)
       setSuccess(true)
-      setForm({ title: '', date: '', startTime: '', endTime: '', coHosts: '' })
+      setForm({
+        title: '', date: '', startTime: '', endTime: '', coHosts: '',
+        recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
+      })
     } catch (err) {
       setError(err.response?.data?.error || 'เกิดข้อผิดพลาด กรุณาลองใหม่')
     } finally {
@@ -122,7 +133,7 @@ function Book() {
                   <div style={s.infoDivider} />
                   <div style={s.infoItem}>
                     <span style={s.infoLabel}>ล่วงหน้า</span>
-                    <span style={s.infoValue}>ไม่เกิน 7 วัน</span>
+                    <span style={s.infoValue}>ไม่เกิน 30 วัน</span>
                   </div>
                   <div style={s.infoDivider} />
                   <div style={s.infoItem}>
@@ -243,6 +254,38 @@ function Book() {
                 value={form.coHosts}
                 onChange={e => setForm({ ...form, coHosts: e.target.value })}
               />
+            </div>
+
+            <div style={s.field}>
+              <label style={{ ...s.label, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.recurringEnabled}
+                  onChange={e => setForm({ ...form, recurringEnabled: e.target.checked })}
+                />
+                จองซ้ำ (ทำซ้ำหลายครั้ง)
+              </label>
+              {form.recurringEnabled && (
+                <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+                  <select
+                    style={{ ...s.input, flex: 1 }}
+                    value={form.recurringFreq}
+                    onChange={e => setForm({ ...form, recurringFreq: e.target.value })}
+                  >
+                    <option value="weekly">ทุกสัปดาห์</option>
+                    <option value="daily">ทุกวัน</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={2}
+                    max={26}
+                    style={{ ...s.input, flex: 1 }}
+                    value={form.recurringCount}
+                    onChange={e => setForm({ ...form, recurringCount: e.target.value })}
+                  />
+                  <span style={{ alignSelf: 'center', color: '#888', fontSize: 12 }}>ครั้ง</span>
+                </div>
+              )}
             </div>
 
             {duration !== null && (

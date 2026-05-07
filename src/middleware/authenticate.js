@@ -22,7 +22,7 @@ async function authenticate(req, res, next) {
 
   try {
     const result = await pool.query(
-      `SELECT id, email, role FROM users WHERE id = $1`,
+      `SELECT id, email, name, role FROM users WHERE id = $1`,
       [decoded.id]
     );
     if (result.rows.length === 0) {

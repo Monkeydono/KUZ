@@ -25,13 +25,23 @@ passport.use(new GoogleStrategy({
       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     const role = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'student';
 
-    // upsert user — sync role ทุกครั้งที่ login เพื่อให้ env เป็น source of truth
+    // Google access token มีอายุ ~1 ชม. — เก็บ expiry เพื่อ proactive refresh
+    const expiresAt = new Date(Date.now() + 55 * 60 * 1000);
+
+    // upsert user + เก็บ tokens เสมอ
+    // refresh_token จะมาเฉพาะตอน user accept consent — COALESCE กัน null override ของเดิม
     const result = await pool.query(
-      `INSERT INTO users (email, name, role)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (email) DO UPDATE SET name = $2, role = $3
+      `INSERT INTO users (email, name, role,
+                          google_access_token, google_refresh_token, google_token_expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (email) DO UPDATE SET
+         name = EXCLUDED.name,
+         role = EXCLUDED.role,
+         google_access_token = EXCLUDED.google_access_token,
+         google_refresh_token = COALESCE(EXCLUDED.google_refresh_token, users.google_refresh_token),
+         google_token_expires_at = EXCLUDED.google_token_expires_at
        RETURNING *`,
-      [email, profile.displayName, role]
+      [email, profile.displayName, role, accessToken, refreshToken || null, expiresAt]
     );
 
     return done(null, result.rows[0]);
@@ -40,9 +50,18 @@ passport.use(new GoogleStrategy({
   }
 }));
 
-// เริ่ม Google login
+// เริ่ม Google login — request scope รวม Calendar
+// accessType: offline + prompt: consent → บังคับให้ได้ refresh_token เสมอ
 router.get('/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
+  passport.authenticate('google', {
+    scope: [
+      'profile',
+      'email',
+      'https://www.googleapis.com/auth/calendar.events',
+    ],
+    accessType: 'offline',
+    prompt: 'consent',
+  })
 );
 
 // Callback หลัง Google login
@@ -68,9 +87,16 @@ router.get('/failed', (req, res) => {
 
 const authenticate = require('../middleware/authenticate');
 
-// GET /auth/me — frontend ใช้รู้ role ปัจจุบัน (จาก DB ผ่าน middleware)
-router.get('/me', authenticate, (req, res) => {
-  res.json(req.user);
+// GET /auth/me — frontend ใช้รู้ role ปัจจุบัน + เช็คว่า user grant calendar scope แล้ว
+router.get('/me', authenticate, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT (google_refresh_token IS NOT NULL) AS has_calendar
+         FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    res.json({ ...req.user, has_calendar: r.rows[0]?.has_calendar || false });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

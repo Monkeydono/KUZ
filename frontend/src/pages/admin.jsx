@@ -1,9 +1,21 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield } from 'lucide-react'
+import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Download, Activity } from 'lucide-react'
 import api from '../api'
 import Navbar from '../components/Navbar'
 import { useUser } from '../useUser'
+
+async function downloadCSV(path, filename) {
+  const res = await api.get(path, { responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
 
 const STATUS_LABELS = {
   confirmed: { text: 'ยืนยันแล้ว', color: '#1FBA7C', bg: '#D9F5E7' },
@@ -44,11 +56,13 @@ function Admin() {
           <TabBtn icon={<BarChart3 size={16} />} label="ภาพรวม" active={tab === 'overview'} onClick={() => setTab('overview')} />
           <TabBtn icon={<Calendar size={16} />}  label="การจอง"  active={tab === 'bookings'} onClick={() => setTab('bookings')} />
           <TabBtn icon={<Users size={16} />}     label="ผู้ใช้"   active={tab === 'users'}    onClick={() => setTab('users')} />
+          <TabBtn icon={<Activity size={16} />}  label="Audit"   active={tab === 'audit'}    onClick={() => setTab('audit')} />
         </div>
 
         {tab === 'overview' && <Overview />}
         {tab === 'bookings' && <Bookings />}
         {tab === 'users'    && <UsersTab currentUserId={user?.id} />}
+        {tab === 'audit'    && <AuditTab />}
       </div>
     </div>
   )
@@ -92,7 +106,21 @@ function Overview() {
         <StatCard label="ผู้ใช้ทั้งหมด"  value={`${totals.users_total} (${totals.admins_total} admin)`} />
       </div>
 
-      <ChartCard title="การจองรายวัน (14 วันล่าสุด)">
+      <ChartCard
+        title="การจองรายวัน (14 วันล่าสุด)"
+        rightSlot={
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: 11 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 10, height: 10, background: '#1FBA7C', borderRadius: 2, display: 'inline-block' }} />
+              จอง
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 10, height: 10, background: '#c62828', borderRadius: 2, display: 'inline-block' }} />
+              ยกเลิก
+            </span>
+          </div>
+        }
+      >
         <BarChart data={byDay} />
       </ChartCard>
 
@@ -138,10 +166,16 @@ function StatCard({ label, value, accent }) {
   )
 }
 
-function ChartCard({ title, children }) {
+function ChartCard({ title, children, rightSlot }) {
   return (
     <div style={s.chartCard}>
-      <h3 style={s.chartTitle}>{title}</h3>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        marginBottom: 12, gap: 12, flexWrap: 'wrap',
+      }}>
+        <h3 style={{ ...s.chartTitle, marginBottom: 0 }}>{title}</h3>
+        {rightSlot}
+      </div>
       {children}
     </div>
   )
@@ -172,12 +206,6 @@ function BarChart({ data }) {
           </g>
         )
       })}
-      <g transform={`translate(${W - pad - 130}, ${pad - 10})`}>
-        <rect x={0}  y={0} width={10} height={10} fill="#1FBA7C" rx={2} />
-        <text x={14} y={9} fontSize="10" fill="#555">จอง</text>
-        <rect x={50} y={0} width={10} height={10} fill="#c62828" rx={2} />
-        <text x={64} y={9} fontSize="10" fill="#555">ยกเลิก</text>
-      </g>
     </svg>
   )
 }
@@ -285,6 +313,17 @@ function Bookings() {
           <option value="cancelled">ยกเลิก</option>
           <option value="completed">เสร็จสิ้น</option>
         </select>
+        <button
+          style={s.exportBtn}
+          onClick={() => downloadCSV(
+            '/admin/bookings.csv',
+            `kuz-bookings-${new Date().toISOString().slice(0,10)}.csv`
+          )}
+          title="Export ทั้งหมดเป็น CSV"
+        >
+          <Download size={14} />
+          <span>Export CSV</span>
+        </button>
       </div>
 
       <div style={s.tableCard}>
@@ -392,6 +431,18 @@ function UsersTab({ currentUserId }) {
 
   return (
     <div style={s.section}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          style={s.exportBtn}
+          onClick={() => downloadCSV(
+            '/admin/users.csv',
+            `kuz-users-${new Date().toISOString().slice(0,10)}.csv`
+          )}
+        >
+          <Download size={14} />
+          <span>Export CSV</span>
+        </button>
+      </div>
       <div style={s.tableCard}>
         <table style={s.table}>
           <thead>
@@ -459,9 +510,108 @@ function UsersTab({ currentUserId }) {
   )
 }
 
+const ACTION_LABELS = {
+  booking_created:    { text: 'สร้างการจอง',    color: '#1FBA7C', bg: '#D9F5E7' },
+  series_created:     { text: 'สร้าง series',    color: '#03A96B', bg: '#D9F5E7' },
+  booking_cancelled:  { text: 'ยกเลิก',          color: '#c62828', bg: '#ffebee' },
+  admin_cancelled:    { text: 'Admin ยกเลิก',    color: '#b91c1c', bg: '#fee2e2' },
+  role_changed:       { text: 'เปลี่ยน role',    color: '#0369a1', bg: '#e0f2fe' },
+}
+
+function AuditTab() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filters, setFilters] = useState({ action: '' })
+
+  const fetchItems = () => {
+    setLoading(true)
+    const params = {}
+    if (filters.action) params.action = filters.action
+    api.get('/admin/audit-logs', { params })
+      .then(res => setItems(res.data))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { fetchItems() }, [filters])
+
+  return (
+    <div style={s.section}>
+      <div style={s.filterBar}>
+        <select
+          style={s.select}
+          value={filters.action}
+          onChange={e => setFilters({ ...filters, action: e.target.value })}
+        >
+          <option value="">ทุก action</option>
+          {Object.entries(ACTION_LABELS).map(([v, m]) => (
+            <option key={v} value={v}>{m.text}</option>
+          ))}
+        </select>
+      </div>
+
+      <div style={s.tableCard}>
+        {loading ? <div style={s.loading}>กำลังโหลด...</div> : (
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>เวลา</th>
+                <th style={s.th}>ผู้ใช้</th>
+                <th style={s.th}>Action</th>
+                <th style={s.th}>การจอง</th>
+                <th style={s.th}>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map(a => {
+                const meta = ACTION_LABELS[a.action] || { text: a.action, color: '#666', bg: '#f0f0f0' }
+                return (
+                  <tr key={a.id}>
+                    <td style={s.td}>
+                      <div style={{ fontSize: 12 }}>
+                        {new Date(a.created_at).toLocaleString('th-TH', {
+                          dateStyle: 'short', timeStyle: 'medium'
+                        })}
+                      </div>
+                    </td>
+                    <td style={s.td}>
+                      {a.user_name ? (
+                        <>
+                          <div>{a.user_name}</div>
+                          <div style={s.tdMuted}>{a.user_email}</div>
+                        </>
+                      ) : (
+                        <span style={s.tdMuted}>—</span>
+                      )}
+                    </td>
+                    <td style={s.td}>
+                      <span style={{ ...s.badge, color: meta.color, background: meta.bg }}>
+                        {meta.text}
+                      </span>
+                    </td>
+                    <td style={s.td}>
+                      {a.booking_title || <span style={s.tdMuted}>—</span>}
+                    </td>
+                    <td style={s.td}>
+                      <code style={{ fontSize: 11, color: '#555', wordBreak: 'break-all' }}>
+                        {a.detail ? JSON.stringify(a.detail) : '—'}
+                      </code>
+                    </td>
+                  </tr>
+                )
+              })}
+              {items.length === 0 && (
+                <tr><td colSpan={5} style={s.emptyRow}>ไม่มีบันทึก</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const s = {
   root: { minHeight: '100vh', background: '#f4f6f4' },
-  body: { maxWidth: 1100, margin: '0 auto', padding: '32px 24px' },
+  body: { maxWidth: 1100, margin: '0 auto', padding: '24px 16px' },
   header: { marginBottom: 24 },
   heading: { fontSize: 26, fontWeight: 700, color: '#014A32', margin: 0 },
   sub: { fontSize: 13, color: '#888', margin: '6px 0 0' },
@@ -481,7 +631,7 @@ const s = {
     color: 'white', fontWeight: 600,
   },
   section: { display: 'flex', flexDirection: 'column', gap: 16 },
-  statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12 },
+  statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 },
   statCard: {
     background: 'white', borderRadius: 12, padding: '14px 16px',
     border: '1px solid #e1e7e1',
@@ -494,11 +644,11 @@ const s = {
     border: '1px solid #e1e7e1',
   },
   chartTitle: { fontSize: 14, fontWeight: 600, color: '#014A32', margin: '0 0 12px' },
-  row2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 },
+  row2: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 },
   empty: { fontSize: 13, color: '#888', textAlign: 'center', padding: 30 },
   loading: { fontSize: 14, color: '#888', textAlign: 'center', padding: 40 },
   filterBar: {
-    display: 'flex', gap: 10, alignItems: 'center',
+    display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
     background: 'white', padding: 12, borderRadius: 12,
     border: '1px solid #e1e7e1',
   },
@@ -516,9 +666,16 @@ const s = {
     padding: '9px 12px', border: '1.5px solid #dde3dd',
     borderRadius: 8, fontSize: 13, background: 'white',
   },
+  exportBtn: {
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    padding: '9px 14px', border: '1.5px solid #03A96B',
+    borderRadius: 8, fontSize: 13, fontWeight: 600,
+    color: '#03A96B', background: 'white', cursor: 'pointer',
+  },
   tableCard: {
     background: 'white', borderRadius: 12,
-    border: '1px solid #e1e7e1', overflow: 'hidden',
+    border: '1px solid #e1e7e1', overflow: 'auto',
+    maxWidth: '100%',
   },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
   th: {

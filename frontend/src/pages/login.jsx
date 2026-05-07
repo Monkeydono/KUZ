@@ -1,9 +1,11 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import KUEmblem from '../components/KUEmblem'
+import { useIsMobile } from '../useIsMobile'
 
 function Login() {
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
 
   useEffect(() => {
     const hash = window.location.hash.replace(/^#/, '')
@@ -20,16 +22,16 @@ function Login() {
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
   return (
-    <div style={s.root}>
+    <div style={{ ...s.root, flexDirection: isMobile ? 'column' : 'row' }}>
       <div style={s.bgPattern} />
 
-      <div style={s.left}>
+      <div style={{ ...s.left, width: isMobile ? '100%' : '50%', minHeight: isMobile ? 240 : 'auto' }}>
         <div style={s.leftInner} className="fade-in">
           <div style={s.emblemWrap}>
-            <KUEmblem size={180} variant="dark" />
+            <KUEmblem size={isMobile ? 100 : 180} variant="dark" />
           </div>
-          <h1 style={s.brand}>KU Zoom Booking</h1>
-          <p style={s.tagline}>
+          <h1 style={{ ...s.brand, fontSize: isMobile ? 24 : 36 }}>KU Zoom Booking</h1>
+          <p style={{ ...s.tagline, fontSize: isMobile ? 13 : 16, margin: '0 0 8px' }}>
             ระบบจองห้องประชุม Zoom<br />
             <span style={s.taglineAccent}>มหาวิทยาลัยเกษตรศาสตร์</span>
           </p>

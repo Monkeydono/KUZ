@@ -9,7 +9,8 @@ function MyBookings() {
   const [bookings, setBookings] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
-  const [confirmId, setConfirmId] = useState(null)
+  const [confirmBooking, setConfirmBooking] = useState(null)
+  const [cancelScope, setCancelScope] = useState('this')
   const [cancelLoading, setCancelLoading] = useState(false)
   const [cancelError, setCancelError] = useState('')
 
@@ -28,14 +29,15 @@ function MyBookings() {
     }
   }
 
-  const handleCancel = (id) => {
+  const handleCancel = (booking) => {
     setCancelError('')
-    setConfirmId(id)
+    setCancelScope('this')
+    setConfirmBooking(booking)
   }
 
   const closeConfirm = () => {
     if (cancelLoading) return
-    setConfirmId(null)
+    setConfirmBooking(null)
     setCancelError('')
   }
 
@@ -43,8 +45,8 @@ function MyBookings() {
     setCancelError('')
     setCancelLoading(true)
     try {
-      await api.delete(`/bookings/${confirmId}`)
-      setConfirmId(null)
+      await api.delete(`/bookings/${confirmBooking.id}?scope=${cancelScope}`)
+      setConfirmBooking(null)
       await fetchBookings()
     } catch (err) {
       setCancelError(err.response?.data?.error || 'ยกเลิกไม่สำเร็จ กรุณาลองใหม่')
@@ -217,7 +219,7 @@ function MyBookings() {
                         <button
                           style={s.cancelBtn}
                           className="ku-cancel"
-                          onClick={() => handleCancel(b.id)}
+                          onClick={() => handleCancel(b)}
                         >
                           ยกเลิก
                         </button>
@@ -231,7 +233,7 @@ function MyBookings() {
         </div>
       </div>
 
-      {confirmId !== null && (
+      {confirmBooking && (
         <div style={s.overlay} onClick={closeConfirm}>
           <div style={s.confirmModal} className="slide-in" onClick={e => e.stopPropagation()}>
             <div style={s.modalHeader}>
@@ -242,9 +244,41 @@ function MyBookings() {
             </div>
             <div style={s.modalBody}>
               <p style={s.modalText}>
-                ต้องการยกเลิกการจองนี้ใช่หรือไม่?<br />
-                <span style={s.modalSubText}>การยกเลิกจะคืนโควตา 1 ครั้ง</span>
+                ยกเลิกการจอง <strong>{confirmBooking.title}</strong>?<br />
+                <span style={s.modalSubText}>การยกเลิกจะคืนโควตา</span>
               </p>
+              {confirmBooking.series_id && (
+                <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 12, color: '#888', textAlign: 'center' }}>
+                    การจองนี้เป็นส่วนหนึ่งของชุด — เลือกขอบเขต
+                  </div>
+                  {[
+                    { v: 'this',   label: 'เฉพาะครั้งนี้' },
+                    { v: 'future', label: 'ครั้งนี้และอนาคต' },
+                    { v: 'all',    label: 'ทั้งหมดของชุด (ที่ยังไม่เริ่ม)' },
+                  ].map(opt => (
+                    <label
+                      key={opt.v}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '10px 12px', borderRadius: 8,
+                        border: `1.5px solid ${cancelScope === opt.v ? '#03A96B' : '#e1e7e1'}`,
+                        background: cancelScope === opt.v ? '#F0FBF6' : 'white',
+                        cursor: 'pointer', fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="scope"
+                        value={opt.v}
+                        checked={cancelScope === opt.v}
+                        onChange={e => setCancelScope(e.target.value)}
+                      />
+                      {opt.label}
+                    </label>
+                  ))}
+                </div>
+              )}
               {cancelError && (
                 <div style={s.modalError}>
                   <AlertCircle size={16} style={{ flexShrink: 0 }} />
