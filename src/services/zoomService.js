@@ -25,35 +25,46 @@ async function getZoomToken() {
   return cachedToken;
 }
 
-async function createMeeting({ title, startTime, durationMinutes, coHostEmails = [] }) {
+async function createMeeting({ title, startTime, durationMinutes }) {
   const token = await getZoomToken();
 
-  const response = await axios.post(
-    'https://api.zoom.us/v2/users/me/meetings',
-    {
-      topic:      title,
-      type:       2,
-      start_time: startTime,
-      duration:   durationMinutes,
-      timezone:   'Asia/Bangkok',
-      settings: {
-        // กันคนเข้าก่อน host มาเปิดห้อง — ใช้ร่วมกับ /join page
-        // ที่ block ไม่ให้ user เข้าก่อนเวลาด้วย
-        join_before_host: false,
-        waiting_room:     true,
-        // ตั้ง co-host ผ่าน alternative_hosts (ต้อง Zoom Pro+ licensed)
-        // ถ้าใช้ Free จะถูก ignore — host ต้อง promote in-meeting แทน
-        alternative_hosts: coHostEmails.join(','),
-      }
-    },
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-
-  return {
-    meetingId:  response.data.id,
-    joinUrl:    response.data.join_url,
-    password:   response.data.password,
+  // ไม่ส่ง alternative_hosts ไป Zoom — co-host เก็บเป็น metadata ใน KUZ เท่านั้น
+  // (Zoom alternative_hosts บังคับ licensed user ใน account เดียวกัน เลยใช้ไม่สะดวก)
+  const settings = {
+    join_before_host: false,
+    waiting_room:     true,
   };
+
+  try {
+    const response = await axios.post(
+      'https://api.zoom.us/v2/users/me/meetings',
+      {
+        topic:      title,
+        type:       2,
+        start_time: startTime,
+        duration:   durationMinutes,
+        timezone:   'Asia/Bangkok',
+        settings,
+      },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    return {
+      meetingId:  response.data.id,
+      joinUrl:    response.data.join_url,
+      password:   response.data.password,
+    };
+  } catch (err) {
+    // surface Zoom error ให้ caller รู้รายละเอียด — สำหรับ debug + error message ที่เจาะจง
+    const data = err.response?.data;
+    console.error('[Zoom create meeting failed]', err.response?.status, data);
+    const msg = data?.message || err.message;
+    const e = new Error(msg);
+    e.zoomCode = data?.code;
+    e.zoomStatus = err.response?.status;
+    e.zoomMessage = msg;
+    throw e;
+  }
 }
 
 async function deleteMeeting(meetingId) {

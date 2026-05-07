@@ -239,7 +239,7 @@ function Book() {
               </label>
               <input
                 style={s.input}
-                placeholder="email1@ku.th, email2@ku.th"
+                placeholder="email1@ku.th, email2@ku.ac.th"
                 value={form.coHosts}
                 onChange={e => setForm({ ...form, coHosts: e.target.value })}
               />

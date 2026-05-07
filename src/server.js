@@ -5,7 +5,7 @@ require('dotenv').config();
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
 
 const pool = require('../config/db');
@@ -15,7 +15,7 @@ const reminderService = require('./services/reminderService');
 cron.schedule('*/5 * * * *', async () => {
   try {
     await pool.query('SELECT auto_complete_bookings()');
-    console.log('⏰ Auto-complete bookings ran');
+    console.log('Auto-complete bookings ran');
   } catch (err) {
     console.error('Cron auto-complete error:', err.message);
   }

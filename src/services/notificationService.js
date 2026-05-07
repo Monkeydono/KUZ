@@ -2,9 +2,10 @@ const axios = require('axios');
 require('dotenv').config();
 
 // รองรับทั้งชื่อใหม่ (NOTIFICATION) และชื่อเก่า (WEBHOOK) เผื่อ backwards compat
-const BOOKING_URL   = process.env.N8N_NOTIFICATION_WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
-const CANCEL_URL    = process.env.N8N_CANCELLATION_WEBHOOK_URL;
-const REMINDER_URL  = process.env.N8N_REMINDER_WEBHOOK_URL;
+const BOOKING_URL    = process.env.N8N_NOTIFICATION_WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
+const CANCEL_URL     = process.env.N8N_CANCELLATION_WEBHOOK_URL;
+const REMINDER_URL   = process.env.N8N_REMINDER_WEBHOOK_URL;
+const COHOST_URL     = process.env.N8N_COHOST_INVITE_WEBHOOK_URL;
 
 async function sendWebhook(url, payload, label) {
   if (!url) {
@@ -63,8 +64,23 @@ async function sendReminderNotification(booking) {
   }, 'booking_reminder');
 }
 
+async function sendCoHostInvitation(booking, coHostEmail) {
+  await sendWebhook(COHOST_URL, {
+    type:        'cohost_invitation',
+    email:       coHostEmail,
+    host_name:   booking.user_name,
+    host_email:  booking.user_email,
+    title:       booking.title,
+    date:        formatDate(booking.start_time),
+    time:        `${formatTime(booking.start_time)} - ${formatTime(booking.end_time)}`,
+    zoom_link:   booking.zoom_join_url,
+    booking_id:  booking.id,
+  }, 'cohost_invitation');
+}
+
 module.exports = {
   sendBookingConfirmation,
   sendCancellationNotification,
   sendReminderNotification,
+  sendCoHostInvitation,
 };

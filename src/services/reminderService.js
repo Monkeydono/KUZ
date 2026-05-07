@@ -14,6 +14,10 @@ async function sendDueReminders() {
                              AND NOW() + INTERVAL '16 minutes'`
   );
 
+  if (result.rowCount > 0) {
+    console.log(`[reminder] found ${result.rowCount} booking(s) due for reminder`);
+  }
+
   for (const booking of result.rows) {
     // mark sent ก่อนยิง webhook กัน duplicate ถ้า cron วิ่งซ้อนกัน
     // (กรณี webhook fail ก็ยอมเสีย reminder รอบนั้น แทนที่จะส่งซ้ำ)

@@ -170,7 +170,17 @@ function MyBookings() {
                         <span style={{ ...s.badge, color: st.color, background: st.bg }}>
                           {st.text}
                         </span>
+                        {b.is_co_host && (
+                          <span style={{ ...s.badge, color: '#0369a1', background: '#e0f2fe' }}>
+                            Co-host
+                          </span>
+                        )}
                       </div>
+                      {b.is_co_host && (
+                        <div style={{ ...s.dateRow, color: '#888', fontSize: 12 }}>
+                          ผู้จอง: {b.owner_name} ({b.owner_email})
+                        </div>
+                      )}
                       <div style={s.dateRow}>
                         <Calendar size={14} style={s.dateIcon} />
                         <span style={s.date}>{formatDate(b.start_time)}</span>
@@ -203,13 +213,15 @@ function MyBookings() {
                           <code style={s.passCode}>{b.zoom_password}</code>
                         </div>
                       )}
-                      <button
-                        style={s.cancelBtn}
-                        className="ku-cancel"
-                        onClick={() => handleCancel(b.id)}
-                      >
-                        ยกเลิก
-                      </button>
+                      {!b.is_co_host && (
+                        <button
+                          style={s.cancelBtn}
+                          className="ku-cancel"
+                          onClick={() => handleCancel(b.id)}
+                        >
+                          ยกเลิก
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

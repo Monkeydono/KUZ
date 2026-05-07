@@ -12,9 +12,9 @@ const pool = new Pool({
 // ทดสอบการเชื่อมต่อตอน startup
 pool.connect((err, client, release) => {
   if (err) {
-    console.error('❌ Database connection failed:', err.message);
+    console.error('Database connection failed:', err.message);
   } else {
-    console.log('✅ Database connected successfully');
+    console.log('Database connected successfully');
     release();
   }
 });

@@ -15,9 +15,10 @@ passport.use(new GoogleStrategy({
   try {
     const email = profile.emails[0].value;
 
-    // กรองเฉพาะ @ku.th
-    if (!email.endsWith('@ku.th')) {
-      return done(null, false, { message: 'กรุณาใช้ email @ku.th เท่านั้น' });
+    // กรองเฉพาะ @ku.th และ @ku.ac.th
+    const lower = email.toLowerCase();
+    if (!lower.endsWith('@ku.th') && !lower.endsWith('@ku.ac.th')) {
+      return done(null, false, { message: 'กรุณาใช้ email @ku.th หรือ @ku.ac.th เท่านั้น' });
     }
 
     const adminEmails = (process.env.ADMIN_EMAILS || '')
@@ -62,7 +63,7 @@ router.get('/google/callback',
 );
 
 router.get('/failed', (req, res) => {
-  res.status(401).json({ error: 'กรุณาใช้ email @ku.th เท่านั้น' });
+  res.status(401).json({ error: 'กรุณาใช้ email @ku.th หรือ @ku.ac.th เท่านั้น' });
 });
 
 const authenticate = require('../middleware/authenticate');

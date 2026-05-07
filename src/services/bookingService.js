@@ -4,6 +4,7 @@ const notificationService = require('./notificationService');
 const quotaService = require('./quotaService');
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ALLOWED_DOMAINS = ['@ku.th', '@ku.ac.th'];
 
 function normalizeCoHosts(input) {
   if (!input) return [];
@@ -20,6 +21,12 @@ function validateCoHosts(emails, ownerEmail) {
     if (!EMAIL_REGEX.test(email)) {
       throw { status: 400, message: `อีเมล co-host ไม่ถูกต้อง: ${email}` };
     }
+    if (!ALLOWED_DOMAINS.some(d => email.endsWith(d))) {
+      throw {
+        status: 400,
+        message: `Co-host ต้องเป็นอีเมลของมหาวิทยาลัย (@ku.th หรือ @ku.ac.th): ${email}`,
+      };
+    }
     if (email === ownerEmail.toLowerCase()) {
       throw { status: 400, message: 'ผู้จองเป็น host อยู่แล้ว ไม่ต้องระบุเป็น co-host' };
     }
@@ -29,11 +36,13 @@ function validateCoHosts(emails, ownerEmail) {
   }
 }
 
+// ต้องมี gap >= 1 นาทีระหว่าง booking — เลย buffer end_time +1 ทั้งสองฝั่ง
 async function checkConflict(startTime, endTime) {
   const result = await pool.query(
     `SELECT id FROM bookings
      WHERE status = 'confirmed'
-       AND tsrange(start_time, end_time, '[)') && tsrange($1::timestamp, $2::timestamp, '[)')`,
+       AND tsrange(start_time, end_time + interval '1 minute', '[)')
+        && tsrange($1::timestamp, $2::timestamp + interval '1 minute', '[)')`,
     [startTime, endTime]
   );
   return result.rows.length > 0;
@@ -94,7 +103,6 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
       title,
       startTime,
       durationMinutes: Math.ceil(duration),
-      coHostEmails: coHosts,
     });
   } catch (err) {
     if (!isAdmin) await quotaService.returnQuota(userId, start);
@@ -127,6 +135,15 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
 
   await notificationService.sendBookingConfirmation(booking);
 
+  // เชิญ co-host ทุกคน (fail แต่ละคนไม่ block booking)
+  for (const email of coHosts) {
+    try {
+      await notificationService.sendCoHostInvitation(booking, email);
+    } catch (err) {
+      console.error('co-host invite failed for', email, err.message);
+    }
+  }
+
   return booking;
 }
 
@@ -136,7 +153,7 @@ async function cancelBooking(bookingId, userId, userRole) {
   const ownerClause = isAdmin ? '' : 'AND b.user_id = $2';
   const params = isAdmin ? [bookingId] : [bookingId, userId];
   const result = await pool.query(
-    `SELECT b.*, u.email as user_email, u.name as user_name
+    `SELECT b.*, u.email as user_email, u.name as user_name, u.role as owner_role
      FROM bookings b
      JOIN users u ON u.id = b.user_id
      WHERE b.id = $1 ${ownerClause} AND b.status = 'confirmed'`,
@@ -149,7 +166,9 @@ async function cancelBooking(bookingId, userId, userRole) {
 
   const booking = result.rows[0];
 
-  if (new Date(booking.start_time) <= new Date()) {
+  // ห้ามยกเลิก meeting ที่เริ่มไปแล้ว — ยกเว้น admin (เช่น สั่งปิดห้องฉุกเฉิน)
+  const hasStarted = new Date(booking.start_time) <= new Date();
+  if (hasStarted && !isAdmin) {
     throw { status: 400, message: 'ไม่สามารถยกเลิกการจองที่เริ่มไปแล้วได้' };
   }
 
@@ -158,7 +177,10 @@ async function cancelBooking(bookingId, userId, userRole) {
     [bookingId]
   );
 
-  if (!isAdmin) {
+  // คืน quota เฉพาะกรณีเจ้าของเป็น student และยังไม่เริ่ม
+  // - admin owner ไม่ใช้ quota → ไม่ต้องคืน
+  // - booking ที่เริ่มไปแล้วถือว่าใช้ quota ไปแล้ว → ไม่คืน (กัน abuse)
+  if (booking.owner_role === 'student' && !hasStarted) {
     await quotaService.returnQuota(booking.user_id, booking.start_time);
   }
 
@@ -173,13 +195,25 @@ async function cancelBooking(bookingId, userId, userRole) {
   return { message: 'ยกเลิกการจองสำเร็จ' };
 }
 
-async function getUserBookings(userId, { limit = 50, offset = 0 } = {}) {
+// คืน booking ที่ user เป็น owner หรือเป็น co-host
+// เพิ่ม flag `is_co_host` (true ถ้า user ไม่ใช่ owner แต่ถูกเชิญเป็น co-host)
+async function getUserBookings(userId, userEmail, { limit = 50, offset = 0 } = {}) {
+  const emailLower = (userEmail || '').toLowerCase();
   const result = await pool.query(
-    `SELECT * FROM bookings
-     WHERE user_id = $1
-     ORDER BY start_time DESC
-     LIMIT $2 OFFSET $3`,
-    [userId, limit, offset]
+    `SELECT b.*,
+            u.email AS owner_email,
+            u.name  AS owner_name,
+            (b.user_id != $1) AS is_co_host
+       FROM bookings b
+       JOIN users u ON u.id = b.user_id
+      WHERE b.user_id = $1
+         OR EXISTS (
+              SELECT 1 FROM unnest(b.co_host_emails) AS ch(email)
+               WHERE LOWER(ch.email) = $2
+            )
+      ORDER BY b.start_time DESC
+      LIMIT $3 OFFSET $4`,
+    [userId, emailLower, limit, offset]
   );
   return result.rows;
 }

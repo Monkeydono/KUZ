@@ -42,7 +42,7 @@ function Login() {
           <h2 style={s.heading}>ยินดีต้อนรับ</h2>
           <p style={s.desc}>
             ใช้บัญชี Google ของมหาวิทยาลัย<br />
-            <strong style={s.strong}>(@ku.th)</strong> เพื่อเข้าใช้งาน
+            <strong style={s.strong}>(@ku.th หรือ @ku.ac.th)</strong> เพื่อเข้าใช้งาน
           </p>
 
           <button

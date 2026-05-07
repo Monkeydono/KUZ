@@ -23,7 +23,7 @@ router.get('/', async (req, res, next) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit, 10) || 50, 200);
     const offset = parseInt(req.query.offset, 10) || 0;
-    const bookings = await bookingService.getUserBookings(req.user.id, { limit, offset });
+    const bookings = await bookingService.getUserBookings(req.user.id, req.user.email, { limit, offset });
     res.json(bookings);
   } catch (err) {
     next(err);

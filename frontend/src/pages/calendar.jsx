@@ -5,7 +5,7 @@ import { useUser } from '../useUser'
 import Navbar from '../components/Navbar'
 
 const FIRST_HOUR = 8
-const LAST_HOUR = 20
+const LAST_HOUR = 24
 const HOURS = Array.from({ length: LAST_HOUR - FIRST_HOUR + 1 }, (_, i) => i + FIRST_HOUR)
 const PX_PER_HOUR = 64
 const TOP_PAD = 14
@@ -83,13 +83,14 @@ function Calendar() {
   const openModal = (hour) => {
     if (isHourFullyBooked(hour)) return
 
-    // หา earliest start ที่ว่างในชั่วโมงนี้ — ถ้ามี booking 10:30-11:10
-    // คลิก row 11:00 → ต้องเริ่มที่ 11:10 (round up ถึง 5 นาที = 11:15)
+    // earliest start = end_of_prev_booking + 1 นาที (gap บังคับ)
+    // แล้ว round up ถึง 5 นาทีที่ใกล้สุด
     let earliest = hour
     bookedSlots.forEach(slot => {
       const [s, e] = slotToHours(slot)
       if (s < hour + 1 && e > hour && e > earliest) earliest = e
     })
+    if (earliest > hour) earliest += 1 / 60   // +1 นาที buffer ถ้ามี booking ก่อน
     earliest = Math.ceil(earliest * 12) / 12
     if (earliest >= hour + 1) return
 
@@ -291,13 +292,23 @@ function Calendar() {
           ) : (
             <div style={s.timeline}>
               <div style={s.gutter}>
-                {HOURS.map(hour => (
-                  <div key={hour} style={s.gutterCell}>
-                    <span style={s.gutterTime}>
-                      {String(hour).padStart(2,'0')}:00
-                    </span>
-                  </div>
-                ))}
+                {HOURS.map((hour, i) => {
+                  const isLast = i === HOURS.length - 1
+                  return (
+                    <div
+                      key={hour}
+                      style={{
+                        ...s.gutterCell,
+                        // cell สุดท้าย (24:00) ไม่มีพื้นที่ ใส่แค่ label
+                        height: isLast ? 0 : PX_PER_HOUR,
+                      }}
+                    >
+                      <span style={s.gutterTime}>
+                        {String(hour).padStart(2,'0')}:00
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
 
               <div style={s.tracks}>
@@ -317,6 +328,8 @@ function Calendar() {
                     </div>
                   )
                 })}
+                {/* เส้นปิดที่ตำแหน่ง 24:00 — ไม่มี body, ไม่ clickable */}
+                <div style={s.endLine} />
 
                 {bookedSlots.map((slot, i) => {
                   const start = new Date(slot.start_time)
@@ -324,7 +337,9 @@ function Calendar() {
                   const startFloat = start.getHours() + start.getMinutes() / 60
                   const endFloat = end.getHours() + end.getMinutes() / 60
                   const top = (startFloat - FIRST_HOUR) * PX_PER_HOUR
-                  const height = Math.max((endFloat - startFloat) * PX_PER_HOUR - 4, 24)
+                  // ไม่ clamp ใหญ่ — กัน block 15 นาทียื่นทับ block 30 นาทีถัดไป
+                  const rawHeight = (endFloat - startFloat) * PX_PER_HOUR
+                  const height = Math.max(rawHeight - 2, 14)
                   // block สั้น (< 44px) → layout แนวนอน, font เล็ก, padding น้อย
                   const isCompact = height < 44
                   const timeLabel = `${start.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} – ${end.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`
@@ -426,7 +441,7 @@ function Calendar() {
                 </label>
                 <input
                   style={s.input}
-                  placeholder="email1@ku.th, email2@ku.th"
+                  placeholder="email1@ku.th, email2@ku.ac.th"
                   value={modalForm.coHosts}
                   onChange={e => setModalForm({ ...modalForm, coHosts: e.target.value })}
                   disabled={modalSuccess}
@@ -629,8 +644,9 @@ const s = {
   },
   tracks: {
     flex: 1, position: 'relative',
-    paddingRight: 14, paddingLeft: 14, paddingTop: TOP_PAD,
-    minHeight: PX_PER_HOUR * (HOURS.length - 1) + 28 + TOP_PAD,
+    paddingRight: 14, paddingLeft: 14,
+    paddingTop: TOP_PAD, paddingBottom: TOP_PAD,
+    minHeight: PX_PER_HOUR * (HOURS.length - 1) + TOP_PAD * 2,
   },
   hourRow: {
     height: PX_PER_HOUR, position: 'relative',
@@ -643,6 +659,10 @@ const s = {
     opacity: 0, transition: 'opacity 0.15s var(--ease)',
     pointerEvents: 'none',
     paddingLeft: 12,
+  },
+  endLine: {
+    height: 0,
+    borderTop: '1px dashed #eef2ee',
   },
   bookedBlock: {
     position: 'absolute', left: 8, right: 8,
@@ -657,8 +677,8 @@ const s = {
     minWidth: 0,
   },
   bookedBlockCompact: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    padding: '2px 10px',
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    padding: '0 8px',
   },
   bookedName: {
     fontSize: 13, fontWeight: 600, color: '#9f1239',
