@@ -1,35 +1,49 @@
 const axios = require('axios');
 require('dotenv').config();
 
-let cachedToken = null;
-let cachedExpiry = 0;
+// cache token แยกตาม account_id เพื่อให้รองรับหลาย Zoom account ได้
+const tokenCache = new Map(); // accountId → { token, expiry }
 
-async function getZoomToken() {
-  if (cachedToken && Date.now() < cachedExpiry - 60000) {
-    return cachedToken;
+function envCreds() {
+  return {
+    accountId:    process.env.ZOOM_ACCOUNT_ID,
+    clientId:     process.env.ZOOM_CLIENT_ID,
+    clientSecret: process.env.ZOOM_CLIENT_SECRET,
+  };
+}
+
+async function getZoomToken(creds = null) {
+  const c = creds || envCreds();
+  if (!c.accountId || !c.clientId || !c.clientSecret) {
+    throw new Error('Zoom credentials ไม่ครบ (ตรวจ ENV หรือ zoom_accounts row)');
+  }
+
+  const cached = tokenCache.get(c.accountId);
+  if (cached && Date.now() < cached.expiry - 60000) {
+    return cached.token;
   }
 
   const credentials = Buffer.from(
-    `${process.env.ZOOM_CLIENT_ID}:${process.env.ZOOM_CLIENT_SECRET}`
+    `${c.clientId}:${c.clientSecret}`
   ).toString('base64');
 
   const response = await axios.post(
     'https://zoom.us/oauth/token?grant_type=account_credentials' +
-    `&account_id=${process.env.ZOOM_ACCOUNT_ID}`,
+    `&account_id=${c.accountId}`,
     {},
     { headers: { Authorization: `Basic ${credentials}` } }
   );
 
-  cachedToken = response.data.access_token;
-  cachedExpiry = Date.now() + (response.data.expires_in * 1000);
-  return cachedToken;
+  tokenCache.set(c.accountId, {
+    token:  response.data.access_token,
+    expiry: Date.now() + (response.data.expires_in * 1000),
+  });
+  return response.data.access_token;
 }
 
-async function createMeeting({ title, startTime, durationMinutes }) {
-  const token = await getZoomToken();
+async function createMeeting({ title, startTime, durationMinutes, creds = null }) {
+  const token = await getZoomToken(creds);
 
-  // ไม่ส่ง alternative_hosts ไป Zoom — co-host เก็บเป็น metadata ใน KUZ เท่านั้น
-  // (Zoom alternative_hosts บังคับ licensed user ใน account เดียวกัน เลยใช้ไม่สะดวก)
   const settings = {
     join_before_host: false,
     waiting_room:     true,
@@ -55,7 +69,6 @@ async function createMeeting({ title, startTime, durationMinutes }) {
       password:   response.data.password,
     };
   } catch (err) {
-    // surface Zoom error ให้ caller รู้รายละเอียด — สำหรับ debug + error message ที่เจาะจง
     const data = err.response?.data;
     console.error('[Zoom create meeting failed]', err.response?.status, data);
     const msg = data?.message || err.message;
@@ -67,8 +80,8 @@ async function createMeeting({ title, startTime, durationMinutes }) {
   }
 }
 
-async function deleteMeeting(meetingId) {
-  const token = await getZoomToken();
+async function deleteMeeting(meetingId, creds = null) {
+  const token = await getZoomToken(creds);
 
   await axios.delete(
     `https://api.zoom.us/v2/meetings/${meetingId}`,

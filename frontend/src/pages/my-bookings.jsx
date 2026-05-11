@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Calendar, Clock, CalendarX2, AlertCircle, X } from 'lucide-react'
+import { Calendar, Clock, CalendarX2, AlertCircle, X, Users as UsersIcon } from 'lucide-react'
 import api from '../api'
 import Navbar from '../components/Navbar'
 
@@ -56,17 +56,18 @@ function MyBookings() {
   }
 
   const formatDate = (iso) => new Date(iso).toLocaleDateString('th-TH', {
-    year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
+    year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', timeZone: 'Asia/Bangkok',
   })
 
   const formatTime = (iso) => new Date(iso).toLocaleTimeString('th-TH', {
-    hour: '2-digit', minute: '2-digit',
+    hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok',
   })
 
   const statusLabel = (status) => ({
-    confirmed: { text: 'กำลังจะมาถึง', color: '#1FBA7C', bg: '#D9F5E7' },
-    cancelled: { text: 'ยกเลิกแล้ว',    color: '#c62828', bg: '#ffebee' },
-    completed: { text: 'เสร็จสิ้น',     color: '#666',    bg: '#f0f0f0' },
+    confirmed:        { text: 'กำลังจะมาถึง',  color: '#1FBA7C', bg: '#D9F5E7' },
+    pending_approval: { text: 'รออนุมัติ',     color: '#b45309', bg: '#fef3c7' },
+    cancelled:        { text: 'ยกเลิกแล้ว',    color: '#c62828', bg: '#ffebee' },
+    completed:        { text: 'เสร็จสิ้น',     color: '#666',    bg: '#f0f0f0' },
   }[status] || { text: status, color: '#888', bg: '#f5f5f5' })
 
   const stats = useMemo(() => ({
@@ -193,6 +194,25 @@ function MyBookings() {
                           {formatTime(b.start_time)} – {formatTime(b.end_time)}
                         </span>
                       </div>
+                      {b.room_name && (
+                        <div style={s.dateRow}>
+                          <UsersIcon size={14} style={s.dateIcon} />
+                          <span style={s.time}>
+                            {b.room_name} · {b.room_capacity} คน
+                          </span>
+                        </div>
+                      )}
+                      {b.notes && (
+                        <div style={{
+                          marginTop: 8, padding: '8px 10px', borderRadius: 8,
+                          background: '#fafbfa', border: '1px solid #e6ebe6',
+                          fontSize: 12, color: '#555', lineHeight: 1.5,
+                          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                        }}>
+                          <span style={{ fontWeight: 600, color: '#888' }}>หมายเหตุ: </span>
+                          {b.notes}
+                        </div>
+                      )}
                     </div>
                   </div>
 

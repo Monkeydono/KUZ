@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { AlertCircle, Check, Calendar, Clock } from 'lucide-react'
+import { AlertCircle, Check, Calendar, Clock, Users as UsersIcon } from 'lucide-react'
 import api from '../api'
 import { useUser } from '../useUser'
 import Navbar from '../components/Navbar'
@@ -19,23 +19,46 @@ const parseDDMMYYYY = (str) => {
 }
 
 function Book() {
-  const { isAdmin } = useUser()
+  const { user, isAdmin } = useUser()
+  const role = user?.role || 'student'
+  const canPickPriorityRoom = role === 'admin' || role === 'priority'
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
 
+  const [rooms, setRooms] = useState([])
   const [form, setForm] = useState({
     title: '',
     date: formatToDDMMYYYY(searchParams.get('date')) || '',
     startTime: searchParams.get('startTime') || '',
     endTime: '',
     coHosts: '',
+    roomId: '',
+    notes: '',
     recurringEnabled: false,
     recurringFreq: 'weekly',
     recurringCount: 4,
   })
+
+  useEffect(() => {
+    api.get('/bookings/rooms')
+      .then(res => {
+        setRooms(res.data)
+        // เลือก default = ห้องแรกที่ available (ปกติคือ Room 100)
+        if (res.data.length > 0 && !form.roomId) {
+          const firstReady = res.data.find(r => !r.needs_zoom_pro) || res.data[0]
+          setForm(f => ({ ...f, roomId: firstReady.id }))
+        }
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const selectedRoom = rooms.find(r => r.id === form.roomId)
+  const roomMaxMin = selectedRoom?.has_zoom_account ? 24 * 60 : 40
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+  const [isPending, setIsPending] = useState(false)
   const dateInputRef = useRef(null)
   const startTimeRef = useRef(null)
   const endTimeRef = useRef(null)
@@ -73,22 +96,44 @@ function Book() {
       return
     }
 
+    // จำกัดเวลาจอง 08:00 - 24:00 (string compare ok เพราะ HH:mm zero-padded)
+    if (form.startTime < '08:00' || form.startTime > '23:59') {
+      setError('เวลาเริ่มต้องอยู่ระหว่าง 08:00 - 23:59')
+      return
+    }
+    if (form.endTime < '08:00' || form.endTime > '23:59') {
+      setError('เวลาสิ้นสุดต้องอยู่ระหว่าง 08:00 - 24:00')
+      return
+    }
+
+    // ห้องต้อง approve → ต้องระบุเหตุผล (ช่วย staff ตัดสินใจ)
+    if (selectedRoom && selectedRoom.capacity >= 300 && !isAdmin && !form.notes.trim()) {
+      setError('กรุณาระบุเหตุผลการจอง — ห้อง ' + selectedRoom.capacity + ' คนต้องรออนุมัติ')
+      return
+    }
+
     const startTime = `${dateISO}T${form.startTime}:00+07:00`
     const endTime   = `${dateISO}T${form.endTime}:00+07:00`
     const coHostEmails = form.coHosts
       .split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
 
     const payload = { title: form.title, startTime, endTime, coHostEmails }
+    if (form.roomId) payload.roomId = form.roomId
+    if (form.notes.trim()) payload.notes = form.notes.trim()
     if (form.recurringEnabled && form.recurringCount > 1) {
       payload.recurring = { freq: form.recurringFreq, count: parseInt(form.recurringCount, 10) }
     }
 
     try {
       setLoading(true)
-      await api.post('/bookings', payload)
+      const res = await api.post('/bookings', payload)
+      const created = res.data
+      setIsPending(created.status === 'pending_approval')
       setSuccess(true)
       setForm({
         title: '', date: '', startTime: '', endTime: '', coHosts: '',
+        roomId: form.roomId,  // คงค่าห้องเดิม
+        notes: '',
         recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
       })
     } catch (err) {
@@ -106,7 +151,28 @@ function Book() {
     return mins > 0 ? mins : null
   }
   const duration = calcDuration()
-  const overLimit = duration && duration > 40
+  const overLimit = duration && duration > roomMaxMin
+
+  // คำนวณ preview สำหรับ recurring series
+  const seriesPreview = (() => {
+    if (!form.recurringEnabled) return null
+    const count = parseInt(form.recurringCount, 10)
+    if (!count || count < 2) return null
+    const dateISO = parseDDMMYYYY(form.date)
+    if (!dateISO || !form.startTime) return null
+    const base = new Date(`${dateISO}T${form.startTime}:00+07:00`)
+    if (isNaN(base)) return null
+    const intervalMs = (form.recurringFreq === 'daily' ? 1 : 7) * 24 * 60 * 60 * 1000
+    const last = new Date(base.getTime() + (count - 1) * intervalMs)
+    const fmt = d => d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Bangkok' })
+    const aheadDays = (last - new Date()) / (24 * 60 * 60 * 1000)
+    return {
+      count,
+      firstLabel: fmt(base),
+      lastLabel:  fmt(last),
+      over: !isAdmin && aheadDays > 30,
+    }
+  })()
 
   return (
     <div style={s.root}>
@@ -126,9 +192,11 @@ function Book() {
             <div style={s.infoBox}>
               <div style={s.infoItem}>
                 <span style={s.infoLabel}>ระยะเวลา</span>
-                <span style={s.infoValue}>สูงสุด 40 นาที / ครั้ง</span>
+                <span style={s.infoValue}>
+                  สูงสุด {roomMaxMin >= 1440 ? '24 ชม.' : `${roomMaxMin} นาที`} / ครั้ง
+                </span>
               </div>
-              {!isAdmin && (
+              {role === 'student' && (
                 <>
                   <div style={s.infoDivider} />
                   <div style={s.infoItem}>
@@ -142,6 +210,15 @@ function Book() {
                   </div>
                 </>
               )}
+              {role === 'priority' && (
+                <>
+                  <div style={s.infoDivider} />
+                  <div style={s.infoItem}>
+                    <span style={s.infoLabel}>สิทธิ์</span>
+                    <span style={s.infoValue}>Priority (ไม่จำกัดโควตา · จองห้อง premium ได้)</span>
+                  </div>
+                </>
+              )}
               {isAdmin && (
                 <>
                   <div style={s.infoDivider} />
@@ -152,6 +229,63 @@ function Book() {
                 </>
               )}
             </div>
+
+            {rooms.length >= 1 && (
+              <div style={s.field}>
+                <label style={s.label}>
+                  ขนาดห้องประชุม <span style={s.req}>*</span>
+                </label>
+                <select
+                  style={s.input}
+                  value={form.roomId}
+                  onChange={e => setForm({ ...form, roomId: e.target.value })}
+                >
+                  {rooms.map(r => {
+                    const blockedPriority = r.is_priority_only && !canPickPriorityRoom
+                    const blockedNeedsPro = r.needs_zoom_pro
+                    const suffix = blockedNeedsPro ? ' · ยังไม่พร้อมใช้ (รอ Zoom Pro)'
+                                 : r.is_priority_only ? ' · Priority' : ''
+                    return (
+                      <option
+                        key={r.id}
+                        value={r.id}
+                        disabled={blockedPriority || blockedNeedsPro}
+                      >
+                        {r.name} · {r.capacity} คน{suffix}
+                      </option>
+                    )
+                  })}
+                </select>
+                {selectedRoom && (
+                  <div style={{
+                    marginTop: 8, padding: '8px 12px', borderRadius: 8,
+                    background: selectedRoom.needs_zoom_pro ? '#fff0f0' : '#F0FBF6',
+                    border: `1px solid ${selectedRoom.needs_zoom_pro ? '#ffcccc' : '#B5E8D2'}`,
+                    color: selectedRoom.needs_zoom_pro ? '#c62828' : '#03A96B',
+                    fontSize: 12,
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <UsersIcon size={14} />
+                    รองรับ {selectedRoom.capacity} คน
+                    {selectedRoom.needs_zoom_pro
+                      ? ' · admin ยังไม่ได้ตั้งค่า Zoom Pro — เลือกห้องอื่น'
+                      : selectedRoom.has_zoom_account
+                        ? ' · Pro plan (ไม่จำกัด 40 นาที)'
+                        : ' · Free plan (จำกัด 40 นาที)'}
+                  </div>
+                )}
+                {selectedRoom && selectedRoom.capacity >= 300 && !isAdmin && (
+                  <div style={{
+                    marginTop: 8, padding: '10px 12px', borderRadius: 8,
+                    background: '#fef3c7', border: '1px solid #fde68a',
+                    color: '#92400e', fontSize: 12, lineHeight: 1.5,
+                  }}>
+                    ⚠ ห้อง {selectedRoom.capacity} คน <strong>ต้องรออนุมัติ</strong>จาก staff/admin
+                    ก่อนจึงจะได้รับลิงก์ Zoom — ระบบจะแจ้งทางอีเมลเมื่อ approve แล้ว
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={s.field}>
               <label style={s.label}>หัวข้อการประชุม <span style={s.req}>*</span></label>
@@ -206,6 +340,8 @@ function Book() {
                     style={{ ...s.input, paddingRight: 44 }}
                     type="time"
                     className="ku-time-input"
+                    min="08:00"
+                    max="23:59"
                     value={form.startTime}
                     onChange={e => setForm({ ...form, startTime: e.target.value })}
                   />
@@ -228,6 +364,8 @@ function Book() {
                     style={{ ...s.input, paddingRight: 44 }}
                     type="time"
                     className="ku-time-input"
+                    min="08:00"
+                    max="23:59"
                     value={form.endTime}
                     onChange={e => setForm({ ...form, endTime: e.target.value })}
                   />
@@ -257,6 +395,25 @@ function Book() {
             </div>
 
             <div style={s.field}>
+              <label style={s.label}>
+                หมายเหตุ / เหตุผลการจอง
+                {selectedRoom && selectedRoom.capacity >= 300 && !isAdmin
+                  ? <span style={s.req}> *</span>
+                  : <span style={s.optional}> — ไม่บังคับ</span>}
+              </label>
+              <textarea
+                style={{ ...s.input, minHeight: 70, resize: 'vertical', fontFamily: 'inherit' }}
+                placeholder="เช่น: ประชุมโครงการ X / สอบ Defense / รายวิชา CPE..."
+                value={form.notes}
+                onChange={e => setForm({ ...form, notes: e.target.value })}
+                maxLength={1000}
+              />
+              <div style={{ fontSize: 11, color: '#888', marginTop: 4, textAlign: 'right' }}>
+                {form.notes.length} / 1000
+              </div>
+            </div>
+
+            <div style={s.field}>
               <label style={{ ...s.label, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
@@ -266,25 +423,42 @@ function Book() {
                 จองซ้ำ (ทำซ้ำหลายครั้ง)
               </label>
               {form.recurringEnabled && (
-                <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
-                  <select
-                    style={{ ...s.input, flex: 1 }}
-                    value={form.recurringFreq}
-                    onChange={e => setForm({ ...form, recurringFreq: e.target.value })}
-                  >
-                    <option value="weekly">ทุกสัปดาห์</option>
-                    <option value="daily">ทุกวัน</option>
-                  </select>
-                  <input
-                    type="number"
-                    min={2}
-                    max={26}
-                    style={{ ...s.input, flex: 1 }}
-                    value={form.recurringCount}
-                    onChange={e => setForm({ ...form, recurringCount: e.target.value })}
-                  />
-                  <span style={{ alignSelf: 'center', color: '#888', fontSize: 12 }}>ครั้ง</span>
-                </div>
+                <>
+                  <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+                    <select
+                      style={{ ...s.input, flex: 1 }}
+                      value={form.recurringFreq}
+                      onChange={e => setForm({ ...form, recurringFreq: e.target.value })}
+                    >
+                      <option value="weekly">ทุกสัปดาห์</option>
+                      <option value="daily">ทุกวัน</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={2}
+                      max={isAdmin ? 26 : (form.recurringFreq === 'daily' ? 30 : 5)}
+                      style={{ ...s.input, flex: 1 }}
+                      value={form.recurringCount}
+                      onChange={e => setForm({ ...form, recurringCount: e.target.value })}
+                    />
+                    <span style={{ alignSelf: 'center', color: '#888', fontSize: 12 }}>ครั้ง</span>
+                  </div>
+                  {seriesPreview && (
+                    <div style={{
+                      marginTop: 8, padding: '8px 12px', borderRadius: 8,
+                      background: seriesPreview.over ? '#fff0f0' : '#F0FBF6',
+                      border: `1px solid ${seriesPreview.over ? '#ffcccc' : '#B5E8D2'}`,
+                      color: seriesPreview.over ? '#c62828' : '#03A96B',
+                      fontSize: 12, lineHeight: 1.5,
+                    }}>
+                      จะจอง <strong>{seriesPreview.count} ครั้ง</strong> ตั้งแต่ {seriesPreview.firstLabel}
+                      <br />ครั้งสุดท้าย: <strong>{seriesPreview.lastLabel}</strong>
+                      {seriesPreview.over && !isAdmin && (
+                        <><br />⚠ student จองล่วงหน้าได้ไม่เกิน 30 วัน — ลดจำนวนครั้ง</>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
 
@@ -297,7 +471,11 @@ function Book() {
               }}>
                 <span style={{ fontWeight: 600 }}>ระยะเวลา:</span>
                 <span>{duration} นาที</span>
-                {overLimit && <span style={s.warnTag}>เกินขีดจำกัด</span>}
+                {overLimit && (
+                  <span style={s.warnTag}>
+                    เกิน {roomMaxMin >= 1440 ? '24 ชม.' : `${roomMaxMin} นาที`}
+                  </span>
+                )}
               </div>
             )}
 
@@ -312,17 +490,21 @@ function Book() {
               <div style={s.success} className="slide-in">
                 <div style={s.successCheck}><Check size={18} strokeWidth={3} /></div>
                 <div>
-                  <strong>จองสำเร็จ!</strong>
-                  <p style={s.successText}>กรุณาตรวจสอบอีเมลของคุณเพื่อรับลิงก์ Zoom</p>
+                  <strong>{isPending ? 'ส่งคำขอแล้ว — รออนุมัติ' : 'จองสำเร็จ!'}</strong>
+                  <p style={s.successText}>
+                    {isPending
+                      ? 'staff/admin จะตรวจสอบและแจ้งผลทางอีเมล'
+                      : 'กรุณาตรวจสอบอีเมลของคุณเพื่อรับลิงก์ Zoom'}
+                  </p>
                 </div>
               </div>
             )}
 
             <button
-              style={{ ...s.btn, opacity: loading || overLimit ? 0.6 : 1 }}
+              style={{ ...s.btn, opacity: loading || overLimit || seriesPreview?.over ? 0.6 : 1 }}
               className="ku-submit"
               onClick={handleSubmit}
-              disabled={loading || overLimit}
+              disabled={loading || overLimit || seriesPreview?.over}
             >
               {loading ? (
                 <>

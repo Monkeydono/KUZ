@@ -16,5 +16,12 @@ export function useUser() {
     return () => { cancelled = true }
   }, [])
 
-  return { user, loading, isAdmin: user?.role === 'admin' }
+  const role = user?.role
+  return {
+    user, loading,
+    isAdmin: role === 'admin',
+    isStaff: role === 'staff',
+    isStaffOrAdmin: role === 'admin' || role === 'staff',
+    isPriority: role === 'priority',
+  }
 }

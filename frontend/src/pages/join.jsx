@@ -90,7 +90,7 @@ function Join() {
               <div style={s.countdown}>{countdown}</div>
               <p style={s.subSmall}>
                 เริ่ม {new Date(state.startsAt).toLocaleString('th-TH', {
-                  dateStyle: 'medium', timeStyle: 'short'
+                  dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok'
                 })}
               </p>
               <p style={s.note}>หน้านี้จะพาคุณเข้าห้องอัตโนมัติเมื่อถึงเวลา</p>

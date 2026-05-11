@@ -16,7 +16,7 @@ function getGreeting() {
 function Navbar() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, isAdmin } = useUser()
+  const { user, isStaffOrAdmin } = useUser()
   const isMobile = useIsMobile()
   const [showLogout, setShowLogout] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -35,7 +35,7 @@ function Navbar() {
     { path: '/calendar',    label: 'ปฏิทิน' },
     { path: '/book',        label: 'จองห้อง' },
     { path: '/my-bookings', label: 'การจองของฉัน' },
-    ...(isAdmin ? [{ path: '/admin', label: 'Admin' }] : []),
+    ...(isStaffOrAdmin ? [{ path: '/admin', label: 'Admin' }] : []),
   ]
 
   return (

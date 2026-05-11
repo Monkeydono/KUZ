@@ -25,7 +25,7 @@ function Calendar() {
   const [loading, setLoading] = useState(false)
 
   const [modalHour, setModalHour] = useState(null)
-  const [modalForm, setModalForm] = useState({ title: '', startTime: '', endTime: '', coHosts: '' })
+  const [modalForm, setModalForm] = useState({ title: '', startTime: '', endTime: '', coHosts: '', notes: '' })
   const [modalLoading, setModalLoading] = useState(false)
   const [modalError, setModalError] = useState('')
   const [modalSuccess, setModalSuccess] = useState(false)
@@ -111,6 +111,7 @@ function Calendar() {
       startTime: floatToHHMM(earliest),
       endTime: floatToHHMM(defaultEnd),
       coHosts: '',
+      notes: '',
     })
     setModalError('')
     setModalSuccess(false)
@@ -132,6 +133,11 @@ function Calendar() {
       setModalError('กรุณาระบุเวลาเริ่มและเวลาสิ้นสุด')
       return
     }
+    if (modalForm.startTime < '08:00' || modalForm.startTime > '23:59' ||
+        modalForm.endTime   < '08:00' || modalForm.endTime   > '23:59') {
+      setModalError('เวลาจองอนุญาตเฉพาะ 08:00 - 24:00')
+      return
+    }
 
     const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth()+1).padStart(2,'0')}-${String(selectedDate.getDate()).padStart(2,'0')}`
     const startTime = `${dateStr}T${modalForm.startTime}:00+07:00`
@@ -141,7 +147,9 @@ function Calendar() {
 
     try {
       setModalLoading(true)
-      await api.post('/bookings', { title: modalForm.title, startTime, endTime, coHostEmails })
+      const payload = { title: modalForm.title, startTime, endTime, coHostEmails }
+      if (modalForm.notes.trim()) payload.notes = modalForm.notes.trim()
+      await api.post('/bookings', payload)
       setModalSuccess(true)
       await fetchBookings(selectedDate)
       setTimeout(() => closeModal(), 1500)
@@ -375,7 +383,7 @@ function Calendar() {
                   const rawHeight = (endFloat - startFloat) * PX_PER_HOUR
                   const height = Math.max(rawHeight - 2, 14)
                   const isCompact = height < 44
-                  const timeLabel = `${start.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} – ${end.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`
+                  const timeLabel = `${start.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })} – ${end.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })}`
 
                   // 3 รูปแบบ: ของตัวเอง / co-host / คนอื่น
                   const variant = slot.is_mine    ? s.bookedVariantMine
@@ -419,7 +427,7 @@ function Calendar() {
                     <div style={s.nowDot} />
                     <div style={s.nowBar} />
                     <span style={s.nowLabel}>
-                      {today.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+                      {today.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })}
                     </span>
                   </div>
                 )}
@@ -464,6 +472,8 @@ function Calendar() {
                   <input
                     style={s.input}
                     type="time"
+                    min="08:00"
+                    max="23:59"
                     value={modalForm.startTime}
                     onChange={e => setModalForm({ ...modalForm, startTime: e.target.value })}
                     disabled={modalSuccess}
@@ -474,6 +484,8 @@ function Calendar() {
                   <input
                     style={s.input}
                     type="time"
+                    min="08:00"
+                    max="23:59"
                     value={modalForm.endTime}
                     onChange={e => setModalForm({ ...modalForm, endTime: e.target.value })}
                     disabled={modalSuccess}
@@ -491,6 +503,20 @@ function Calendar() {
                   value={modalForm.coHosts}
                   onChange={e => setModalForm({ ...modalForm, coHosts: e.target.value })}
                   disabled={modalSuccess}
+                />
+              </div>
+
+              <div style={s.field}>
+                <label style={s.label}>
+                  หมายเหตุ / เหตุผลการจอง <span style={{ color: '#888', fontWeight: 400, fontSize: 11 }}>— ไม่บังคับ</span>
+                </label>
+                <textarea
+                  style={{ ...s.input, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+                  placeholder="เช่น: ประชุมโครงการ / สอบ Defense"
+                  value={modalForm.notes}
+                  onChange={e => setModalForm({ ...modalForm, notes: e.target.value })}
+                  disabled={modalSuccess}
+                  maxLength={1000}
                 />
               </div>
 

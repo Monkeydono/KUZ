@@ -1,12 +1,24 @@
 const express = require('express');
 const router = express.Router();
 const bookingService = require('../services/bookingService');
+const roomService = require('../services/roomService');
 const pool = require('../../config/db');
+
+// GET /bookings/rooms — list ห้องที่ user role ปัจจุบันจองได้
+router.get('/rooms', async (req, res, next) => {
+  try {
+    const rooms = await roomService.listAvailableRooms(req.user.role);
+    res.json(rooms);
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.get('/available', async (req, res, next) => {
   try {
-    const { date } = req.query;
-    // ส่ง flag ownership ของผู้ขอเท่านั้น — ไม่ส่ง user_id/email ของคนอื่น
+    const { date, roomId } = req.query;
+    // ถ้าไม่ส่ง roomId → ใช้ default room (เพื่อ backward compat)
+    const targetRoom = roomId || await roomService.getDefaultRoomId();
     const result = await pool.query(
       `SELECT start_time, end_time,
               (user_id = $2) AS is_mine,
@@ -17,8 +29,9 @@ router.get('/available', async (req, res, next) => {
          FROM bookings
         WHERE status = 'confirmed'
           AND DATE(start_time AT TIME ZONE 'Asia/Bangkok') = $1
+          AND ($4::uuid IS NULL OR room_id = $4)
         ORDER BY start_time`,
-      [date, req.user.id, req.user.email]
+      [date, req.user.id, req.user.email, targetRoom]
     );
     res.json(result.rows);
   } catch (err) {
@@ -39,7 +52,7 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { title, startTime, endTime, coHostEmails, recurring } = req.body;
+    const { title, startTime, endTime, coHostEmails, recurring, roomId, notes } = req.body;
     const args = {
       userId:    req.user.id,
       userEmail: req.user.email,
@@ -48,6 +61,8 @@ router.post('/', async (req, res, next) => {
       startTime,
       endTime,
       coHostEmails,
+      roomId,
+      notes,
     };
     if (recurring && recurring.count > 1) {
       const list = await bookingService.createRecurringBooking({ ...args, recurring });
@@ -73,7 +88,6 @@ router.delete('/:id', async (req, res, next) => {
   }
 });
 
-// GET /bookings/:id/join — เช็ค permission + เวลา → ส่ง zoom URL
 router.get('/:id/join', async (req, res, next) => {
   try {
     const info = await bookingService.getJoinInfo(req.params.id, req.user);

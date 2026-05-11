@@ -2,10 +2,32 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../../config/db');
 const requireAdmin = require('../middleware/requireAdmin');
+const requireStaff = require('../middleware/requireStaff');
 const bookingService = require('../services/bookingService');
 const auditService = require('../services/auditService');
+const zoomService = require('../services/zoomService');
 
-router.use(requireAdmin);
+// helper: validate room.capacity ≤ zoom_account.max_attendees
+async function assertCapacityFitsAccount(zoomAccountId, capacity) {
+  if (!zoomAccountId) return;
+  const r = await pool.query(
+    `SELECT max_attendees, label FROM zoom_accounts WHERE id = $1`,
+    [zoomAccountId]
+  );
+  if (r.rows.length === 0) {
+    throw { status: 404, message: 'ไม่พบ Zoom account' };
+  }
+  if (capacity > r.rows[0].max_attendees) {
+    throw {
+      status: 400,
+      message: `Capacity ${capacity} เกิน license ของ Zoom account "${r.rows[0].label}" (${r.rows[0].max_attendees} คน)`,
+    };
+  }
+}
+
+// staff (moderator) เข้าได้: stats, bookings list, cancel, users list, audit
+// admin only: role change, rooms CRUD, zoom_accounts CRUD, CSV exports
+router.use(requireStaff);
 
 // GET /admin/stats — ตัวเลขสรุป + ข้อมูลกราฟ
 router.get('/stats', async (req, res, next) => {
@@ -95,9 +117,11 @@ router.get('/bookings', async (req, res, next) => {
 
     params.push(limit, offset);
     const result = await pool.query(
-      `SELECT b.*, u.email AS user_email, u.name AS user_name
+      `SELECT b.*, u.email AS user_email, u.name AS user_name,
+              r.name AS room_name, r.capacity AS room_capacity
          FROM bookings b
          JOIN users u ON u.id = b.user_id
+         LEFT JOIN rooms r ON r.id = b.room_id
          ${where}
          ORDER BY b.start_time DESC
          LIMIT $${i++} OFFSET $${i++}`,
@@ -109,7 +133,7 @@ router.get('/bookings', async (req, res, next) => {
   }
 });
 
-// DELETE /admin/bookings/:id — admin ยกเลิก booking ใดก็ได้
+// DELETE /admin/bookings/:id — admin/staff ยกเลิก booking ใดก็ได้
 router.delete('/bookings/:id', async (req, res, next) => {
   try {
     const result = await bookingService.cancelBooking(req.params.id, req.user.id, 'admin');
@@ -117,6 +141,33 @@ router.delete('/bookings/:id', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// POST /admin/bookings/:id/approve — staff/admin อนุมัติ booking ห้องใหญ่
+router.post('/bookings/:id/approve', async (req, res, next) => {
+  try {
+    const result = await bookingService.approveBooking(req.params.id, req.user.id);
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+// POST /admin/bookings/:id/reject — staff/admin ปฏิเสธ booking + เก็บเหตุผล
+router.post('/bookings/:id/reject', async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    const result = await bookingService.rejectBooking(req.params.id, req.user.id, reason);
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+// PATCH /admin/bookings/:id/transfer — admin โอน ownership ให้ user อื่น
+router.patch('/bookings/:id/transfer', requireAdmin, async (req, res, next) => {
+  try {
+    const { new_user_id } = req.body;
+    if (!new_user_id) return res.status(400).json({ error: 'ต้องระบุ new_user_id' });
+    const result = await bookingService.transferOwnership(req.params.id, new_user_id, req.user.id);
+    res.json(result);
+  } catch (err) { next(err); }
 });
 
 // GET /admin/users — list + quota เดือนนี้
@@ -141,12 +192,12 @@ router.get('/users', async (req, res, next) => {
   }
 });
 
-// PATCH /admin/users/:id/role — เปลี่ยน role (student ↔ admin)
-router.patch('/users/:id/role', async (req, res, next) => {
+// PATCH /admin/users/:id/role — เปลี่ยน role (student ↔ priority ↔ admin)
+router.patch('/users/:id/role', requireAdmin, async (req, res, next) => {
   try {
     const { role } = req.body;
-    if (role !== 'admin' && role !== 'student') {
-      return res.status(400).json({ error: 'role ต้องเป็น admin หรือ student' });
+    if (!['admin', 'staff', 'priority', 'student'].includes(role)) {
+      return res.status(400).json({ error: 'role ต้องเป็น admin, staff, priority หรือ student' });
     }
     if (req.params.id === req.user.id && role !== 'admin') {
       return res.status(400).json({ error: 'ไม่สามารถลด role ของตัวเองได้' });
@@ -166,6 +217,253 @@ router.patch('/users/:id/role', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// ========= Rooms =========
+
+router.get('/rooms', async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT r.*, za.label AS zoom_account_label,
+              (SELECT COUNT(*) FROM bookings b WHERE b.room_id = r.id AND b.status = 'confirmed') AS upcoming_count
+         FROM rooms r
+         LEFT JOIN zoom_accounts za ON za.id = r.zoom_account_id
+         ORDER BY r.is_priority_only ASC, r.capacity ASC, r.name ASC`
+    );
+    res.json(r.rows);
+  } catch (err) { next(err); }
+});
+
+router.post('/rooms', requireAdmin, async (req, res, next) => {
+  try {
+    const { name, capacity, zoom_account_id, is_priority_only, is_active } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'ต้องระบุชื่อห้อง' });
+    const cap = parseInt(capacity, 10);
+    if (!cap || cap < 1 || cap > 10000) {
+      return res.status(400).json({ error: 'capacity ต้องเป็นจำนวนเต็ม 1-10000' });
+    }
+    await assertCapacityFitsAccount(zoom_account_id || null, cap);
+    const r = await pool.query(
+      `INSERT INTO rooms (name, capacity, zoom_account_id, is_priority_only, is_active)
+       VALUES ($1, $2, $3, COALESCE($4, false), COALESCE($5, true))
+       RETURNING *`,
+      [name.trim(), cap, zoom_account_id || null, is_priority_only, is_active]
+    );
+    await auditService.log({
+      userId: req.user.id, action: 'room_created',
+      detail: { room_id: r.rows[0].id, name: r.rows[0].name, capacity: cap },
+    });
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'ชื่อห้องนี้มีอยู่แล้ว' });
+    next(err);
+  }
+});
+
+router.patch('/rooms/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const { name, capacity, zoom_account_id, is_priority_only, is_active } = req.body;
+    // ถ้าเปลี่ยน capacity หรือ zoom_account_id → validate capacity ≤ max_attendees
+    if (capacity !== undefined || zoom_account_id !== undefined) {
+      const cur = await pool.query(
+        `SELECT capacity, zoom_account_id FROM rooms WHERE id = $1`,
+        [req.params.id]
+      );
+      if (cur.rows.length === 0) return res.status(404).json({ error: 'ไม่พบห้อง' });
+      const newCap   = capacity !== undefined ? parseInt(capacity, 10) : cur.rows[0].capacity;
+      const newZoom  = zoom_account_id !== undefined ? (zoom_account_id || null) : cur.rows[0].zoom_account_id;
+      await assertCapacityFitsAccount(newZoom, newCap);
+    }
+    const fields = [];
+    const params = [];
+    let i = 1;
+    if (name !== undefined)             { fields.push(`name = $${i++}`);             params.push(name.trim()); }
+    if (capacity !== undefined)         { fields.push(`capacity = $${i++}`);         params.push(parseInt(capacity, 10)); }
+    if (zoom_account_id !== undefined)  { fields.push(`zoom_account_id = $${i++}`);  params.push(zoom_account_id || null); }
+    if (is_priority_only !== undefined) { fields.push(`is_priority_only = $${i++}`); params.push(!!is_priority_only); }
+    if (is_active !== undefined)        { fields.push(`is_active = $${i++}`);        params.push(!!is_active); }
+    if (fields.length === 0) return res.status(400).json({ error: 'ไม่มีอะไรให้แก้' });
+    fields.push(`updated_at = NOW()`);
+    params.push(req.params.id);
+    const r = await pool.query(
+      `UPDATE rooms SET ${fields.join(', ')} WHERE id = $${i} RETURNING *`,
+      params
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบห้อง' });
+    await auditService.log({
+      userId: req.user.id, action: 'room_updated',
+      detail: { room_id: req.params.id, changes: req.body },
+    });
+    res.json(r.rows[0]);
+  } catch (err) { next(err); }
+});
+
+router.delete('/rooms/:id', requireAdmin, async (req, res, next) => {
+  try {
+    // ปลอดภัยกว่า: ไม่ลบจริง — แค่ตั้ง is_active=false (booking เก่ายังอ้างห้องได้)
+    const r = await pool.query(
+      `UPDATE rooms SET is_active = false, updated_at = NOW()
+        WHERE id = $1 RETURNING id, name`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบห้อง' });
+    await auditService.log({
+      userId: req.user.id, action: 'room_deactivated',
+      detail: { room_id: req.params.id, name: r.rows[0].name },
+    });
+    res.json({ message: 'ปิดใช้งานห้องแล้ว', id: r.rows[0].id });
+  } catch (err) { next(err); }
+});
+
+// ========= Zoom Accounts =========
+// security note: client_secret ถูก return เฉพาะตอน create (เพื่อยืนยัน) — list ปกติจะ mask
+
+router.get('/zoom-accounts', requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, label, account_id, client_id, max_attendees,
+              ('***' || RIGHT(client_secret, 4)) AS client_secret_masked,
+              created_at, updated_at,
+              (SELECT COUNT(*) FROM rooms WHERE zoom_account_id = zoom_accounts.id) AS room_count
+         FROM zoom_accounts
+         ORDER BY label ASC`
+    );
+    res.json(r.rows);
+  } catch (err) { next(err); }
+});
+
+router.post('/zoom-accounts', requireAdmin, async (req, res, next) => {
+  try {
+    const { label, account_id, client_id, client_secret, max_attendees } = req.body;
+    if (!label || !account_id || !client_id || !client_secret) {
+      return res.status(400).json({ error: 'ต้องระบุ label, account_id, client_id, client_secret' });
+    }
+    const maxAtt = parseInt(max_attendees, 10);
+    if (!maxAtt || maxAtt < 1 || maxAtt > 10000) {
+      return res.status(400).json({ error: 'max_attendees ต้องเป็นจำนวนเต็ม 1-10000 (license limit)' });
+    }
+    const r = await pool.query(
+      `INSERT INTO zoom_accounts (label, account_id, client_id, client_secret, max_attendees)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, label, account_id, client_id, max_attendees, created_at`,
+      [label.trim(), account_id.trim(), client_id.trim(), client_secret, maxAtt]
+    );
+    await auditService.log({
+      userId: req.user.id, action: 'zoom_account_created',
+      detail: { id: r.rows[0].id, label, max_attendees: maxAtt },
+    });
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'label นี้มีอยู่แล้ว' });
+    next(err);
+  }
+});
+
+router.patch('/zoom-accounts/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const { label, account_id, client_id, client_secret, max_attendees } = req.body;
+    const fields = [];
+    const params = [];
+    let i = 1;
+    if (label !== undefined)         { fields.push(`label = $${i++}`);         params.push(label.trim()); }
+    if (account_id !== undefined)    { fields.push(`account_id = $${i++}`);    params.push(account_id.trim()); }
+    if (client_id !== undefined)     { fields.push(`client_id = $${i++}`);     params.push(client_id.trim()); }
+    if (client_secret !== undefined) { fields.push(`client_secret = $${i++}`); params.push(client_secret); }
+    if (max_attendees !== undefined) {
+      const m = parseInt(max_attendees, 10);
+      if (!m || m < 1 || m > 10000) {
+        return res.status(400).json({ error: 'max_attendees ต้อง 1-10000' });
+      }
+      // ตรวจว่าไม่มีห้องที่ capacity > new max_attendees
+      const conflict = await pool.query(
+        `SELECT name, capacity FROM rooms
+          WHERE zoom_account_id = $1 AND capacity > $2`,
+        [req.params.id, m]
+      );
+      if (conflict.rows.length > 0) {
+        return res.status(409).json({
+          error: `มีห้องที่ capacity เกิน ${m}: ${conflict.rows.map(c => `${c.name} (${c.capacity})`).join(', ')}`,
+        });
+      }
+      fields.push(`max_attendees = $${i++}`); params.push(m);
+    }
+    if (fields.length === 0) return res.status(400).json({ error: 'ไม่มีอะไรให้แก้' });
+    fields.push(`updated_at = NOW()`);
+    params.push(req.params.id);
+    const r = await pool.query(
+      `UPDATE zoom_accounts SET ${fields.join(', ')} WHERE id = $${i}
+       RETURNING id, label, account_id, client_id, max_attendees, updated_at`,
+      params
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบ zoom account' });
+    await auditService.log({
+      userId: req.user.id, action: 'zoom_account_updated',
+      detail: { id: req.params.id, changed: Object.keys(req.body) },
+    });
+    res.json(r.rows[0]);
+  } catch (err) { next(err); }
+});
+
+// health check: ทดสอบ token refresh ของ Zoom account
+router.get('/zoom-accounts/:id/health', requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT account_id, client_id, client_secret FROM zoom_accounts WHERE id = $1`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบ zoom account' });
+    const row = r.rows[0];
+    try {
+      // ลอง getZoomToken ใน path ที่ไม่ cache (เรียกผ่าน createMeeting จะ cache)
+      // ใช้ axios call trực tiếp ผ่าน zoomService internal — ที่นี่ create-then-delete
+      const test = await zoomService.createMeeting({
+        title: '[KUZ health check] — ลบทันที',
+        startTime: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        durationMinutes: 1,
+        creds: {
+          accountId:    row.account_id,
+          clientId:     row.client_id,
+          clientSecret: row.client_secret,
+        },
+      });
+      // cleanup ทันที
+      try { await zoomService.deleteMeeting(test.meetingId, {
+        accountId:    row.account_id,
+        clientId:     row.client_id,
+        clientSecret: row.client_secret,
+      }); } catch (e) {}
+      res.json({ ok: true, message: 'Token refresh + Create meeting ผ่าน' });
+    } catch (err) {
+      res.json({
+        ok: false,
+        error: err.zoomMessage || err.message,
+        status: err.zoomStatus,
+      });
+    }
+  } catch (err) { next(err); }
+});
+
+router.delete('/zoom-accounts/:id', requireAdmin, async (req, res, next) => {
+  try {
+    // ป้องกัน orphan: เช็คว่ามีห้องผูกอยู่ไหม
+    const used = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM rooms WHERE zoom_account_id = $1`,
+      [req.params.id]
+    );
+    if (used.rows[0].n > 0) {
+      return res.status(409).json({ error: `มี ${used.rows[0].n} ห้องผูกกับ account นี้ — ต้องเปลี่ยน account ของห้องก่อน` });
+    }
+    const r = await pool.query(
+      `DELETE FROM zoom_accounts WHERE id = $1 RETURNING id, label`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบ zoom account' });
+    await auditService.log({
+      userId: req.user.id, action: 'zoom_account_deleted',
+      detail: { id: req.params.id, label: r.rows[0].label },
+    });
+    res.json({ message: 'ลบแล้ว', id: r.rows[0].id });
+  } catch (err) { next(err); }
 });
 
 // GET /admin/audit-logs?action=&user_id=&from=&to=&limit=&offset=
@@ -228,7 +526,7 @@ function sendCSV(res, filename, csv) {
   res.send(csv);
 }
 
-router.get('/bookings.csv', async (req, res, next) => {
+router.get('/bookings.csv', requireAdmin, async (req, res, next) => {
   try {
     const result = await pool.query(
       `SELECT b.*, u.email AS user_email, u.name AS user_name
@@ -259,7 +557,7 @@ router.get('/bookings.csv', async (req, res, next) => {
   }
 });
 
-router.get('/users.csv', async (req, res, next) => {
+router.get('/users.csv', requireAdmin, async (req, res, next) => {
   try {
     const result = await pool.query(`
       SELECT u.id, u.email, u.name, u.role, u.created_at,

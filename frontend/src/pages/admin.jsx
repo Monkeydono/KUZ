@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Download, Activity } from 'lucide-react'
+import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Download, Activity, Building2, Video, Plus, Edit3, Check } from 'lucide-react'
 import api from '../api'
 import Navbar from '../components/Navbar'
 import { useUser } from '../useUser'
@@ -18,25 +18,26 @@ async function downloadCSV(path, filename) {
 }
 
 const STATUS_LABELS = {
-  confirmed: { text: 'ยืนยันแล้ว', color: '#1FBA7C', bg: '#D9F5E7' },
-  cancelled: { text: 'ยกเลิก',     color: '#c62828', bg: '#ffebee' },
-  completed: { text: 'เสร็จสิ้น',  color: '#666',    bg: '#f0f0f0' },
+  confirmed:        { text: 'ยืนยันแล้ว', color: '#1FBA7C', bg: '#D9F5E7' },
+  pending_approval: { text: 'รออนุมัติ',  color: '#b45309', bg: '#fef3c7' },
+  cancelled:        { text: 'ยกเลิก',     color: '#c62828', bg: '#ffebee' },
+  completed:        { text: 'เสร็จสิ้น',  color: '#666',    bg: '#f0f0f0' },
 }
 
 function Admin() {
-  const { user, loading: userLoading, isAdmin } = useUser()
+  const { user, loading: userLoading, isAdmin, isStaffOrAdmin } = useUser()
   const navigate = useNavigate()
   const [tab, setTab] = useState('overview')
 
   if (userLoading) return null
-  if (!isAdmin) {
+  if (!isStaffOrAdmin) {
     return (
       <div style={s.root}>
         <Navbar />
         <div style={s.deniedBox}>
           <AlertCircle size={42} style={{ color: '#c62828' }} />
           <h2>ไม่มีสิทธิ์เข้าถึง</h2>
-          <p>หน้านี้สำหรับแอดมินเท่านั้น</p>
+          <p>หน้านี้สำหรับแอดมิน/staff เท่านั้น</p>
           <button style={s.btn} onClick={() => navigate('/calendar')}>กลับไปปฏิทิน</button>
         </div>
       </div>
@@ -48,20 +49,28 @@ function Admin() {
       <Navbar />
       <div style={s.body}>
         <div style={s.header}>
-          <h1 style={s.heading}>Admin Dashboard</h1>
-          <p style={s.sub}>ภาพรวมระบบจองห้อง Zoom · {user?.email}</p>
+          <h1 style={s.heading}>{isAdmin ? 'Admin Dashboard' : 'Moderation Dashboard'}</h1>
+          <p style={s.sub}>
+            {isAdmin
+              ? `ภาพรวมระบบจองห้อง Zoom · ${user?.email}`
+              : `ตรวจสอบและจัดการ booking · ${user?.email}`}
+          </p>
         </div>
 
         <div style={s.tabBar}>
-          <TabBtn icon={<BarChart3 size={16} />} label="ภาพรวม" active={tab === 'overview'} onClick={() => setTab('overview')} />
-          <TabBtn icon={<Calendar size={16} />}  label="การจอง"  active={tab === 'bookings'} onClick={() => setTab('bookings')} />
-          <TabBtn icon={<Users size={16} />}     label="ผู้ใช้"   active={tab === 'users'}    onClick={() => setTab('users')} />
-          <TabBtn icon={<Activity size={16} />}  label="Audit"   active={tab === 'audit'}    onClick={() => setTab('audit')} />
+          <TabBtn icon={<BarChart3 size={16} />}  label="ภาพรวม" active={tab === 'overview'} onClick={() => setTab('overview')} />
+          <TabBtn icon={<Calendar size={16} />}   label="การจอง"  active={tab === 'bookings'} onClick={() => setTab('bookings')} />
+          <TabBtn icon={<Users size={16} />}      label="ผู้ใช้"   active={tab === 'users'}    onClick={() => setTab('users')} />
+          {isAdmin && (
+            <TabBtn icon={<Building2 size={16} />}  label="ห้อง"  active={tab === 'rooms'}    onClick={() => setTab('rooms')} />
+          )}
+          <TabBtn icon={<Activity size={16} />}   label="Audit"   active={tab === 'audit'}    onClick={() => setTab('audit')} />
         </div>
 
         {tab === 'overview' && <Overview />}
-        {tab === 'bookings' && <Bookings />}
-        {tab === 'users'    && <UsersTab currentUserId={user?.id} />}
+        {tab === 'bookings' && <Bookings isAdmin={isAdmin} />}
+        {tab === 'users'    && <UsersTab currentUserId={user?.id} isAdmin={isAdmin} />}
+        {tab === 'rooms'    && isAdmin && <RoomsTab />}
         {tab === 'audit'    && <AuditTab />}
       </div>
     </div>
@@ -264,11 +273,14 @@ function PieList({ data }) {
   )
 }
 
-function Bookings() {
+function Bookings({ isAdmin }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [filters, setFilters] = useState({ status: '', search: '' })
   const [confirmDel, setConfirmDel] = useState(null)
+  const [rejectModal, setRejectModal] = useState(null)
+  const [rejectReason, setRejectReason] = useState('')
+  const [actionLoading, setActionLoading] = useState(false)
 
   const fetchItems = () => {
     setLoading(true)
@@ -280,6 +292,30 @@ function Bookings() {
       .finally(() => setLoading(false))
   }
   useEffect(() => { fetchItems() }, [filters])
+
+  const approve = async (id) => {
+    if (!confirm('อนุมัติการจองนี้?')) return
+    setActionLoading(true)
+    try {
+      await api.post(`/admin/bookings/${id}/approve`)
+      fetchItems()
+    } catch (err) {
+      alert(err.response?.data?.error || 'อนุมัติไม่สำเร็จ')
+    } finally { setActionLoading(false) }
+  }
+
+  const reject = async () => {
+    if (!rejectModal) return
+    setActionLoading(true)
+    try {
+      await api.post(`/admin/bookings/${rejectModal.id}/reject`, { reason: rejectReason })
+      setRejectModal(null)
+      setRejectReason('')
+      fetchItems()
+    } catch (err) {
+      alert(err.response?.data?.error || 'ปฏิเสธไม่สำเร็จ')
+    } finally { setActionLoading(false) }
+  }
 
   const cancel = async (id) => {
     try {
@@ -309,21 +345,24 @@ function Bookings() {
           onChange={e => setFilters({ ...filters, status: e.target.value })}
         >
           <option value="">ทุกสถานะ</option>
+          <option value="pending_approval">รออนุมัติ</option>
           <option value="confirmed">ยืนยันแล้ว</option>
           <option value="cancelled">ยกเลิก</option>
           <option value="completed">เสร็จสิ้น</option>
         </select>
-        <button
-          style={s.exportBtn}
-          onClick={() => downloadCSV(
-            '/admin/bookings.csv',
-            `kuz-bookings-${new Date().toISOString().slice(0,10)}.csv`
-          )}
-          title="Export ทั้งหมดเป็น CSV"
-        >
-          <Download size={14} />
-          <span>Export CSV</span>
-        </button>
+        {isAdmin && (
+          <button
+            style={s.exportBtn}
+            onClick={() => downloadCSV(
+              '/admin/bookings.csv',
+              `kuz-bookings-${new Date().toISOString().slice(0,10)}.csv`
+            )}
+            title="Export ทั้งหมดเป็น CSV"
+          >
+            <Download size={14} />
+            <span>Export CSV</span>
+          </button>
+        )}
       </div>
 
       <div style={s.tableCard}>
@@ -341,13 +380,32 @@ function Bookings() {
             <tbody>
               {items.map(b => {
                 const meta = STATUS_LABELS[b.status] || { text: b.status, color: '#888', bg: '#f0f0f0' }
-                const canCancel = b.status === 'confirmed' && new Date(b.start_time) > new Date()
+                // admin ยกเลิกได้ทุก booking ที่ยัง confirmed (รวมที่เริ่มไปแล้ว)
+                const canCancel = b.status === 'confirmed'
                 return (
                   <tr key={b.id}>
                     <td style={s.td}>
                       <div style={{ fontWeight: 600 }}>{b.title}</div>
+                      {b.room_name && (
+                        <div style={s.tdMuted}>
+                          {b.room_name} · {b.room_capacity} คน
+                        </div>
+                      )}
                       {b.co_host_emails?.length > 0 && (
                         <div style={s.tdMuted}>+co-host {b.co_host_emails.length}</div>
+                      )}
+                      {b.notes && (
+                        <div
+                          style={{
+                            marginTop: 6, fontSize: 11, color: '#555',
+                            background: '#fafbfa', padding: '4px 8px', borderRadius: 6,
+                            border: '1px solid #e6ebe6',
+                            maxWidth: 280, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                          }}
+                          title={b.notes}
+                        >
+                          <strong style={{ color: '#888' }}>หมายเหตุ:</strong> {b.notes}
+                        </div>
                       )}
                     </td>
                     <td style={s.td}>
@@ -355,17 +413,37 @@ function Bookings() {
                       <div style={s.tdMuted}>{b.user_email}</div>
                     </td>
                     <td style={s.td}>
-                      <div>{new Date(b.start_time).toLocaleDateString('th-TH', { dateStyle: 'medium' })}</div>
+                      <div>{new Date(b.start_time).toLocaleDateString('th-TH', { dateStyle: 'medium', timeZone: 'Asia/Bangkok' })}</div>
                       <div style={s.tdMuted}>
-                        {new Date(b.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(b.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })}
                         {' – '}
-                        {new Date(b.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(b.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })}
                       </div>
                     </td>
                     <td style={s.td}>
                       <span style={{ ...s.badge, color: meta.color, background: meta.bg }}>{meta.text}</span>
                     </td>
-                    <td style={{ ...s.td, textAlign: 'right' }}>
+                    <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {b.status === 'pending_approval' && (
+                        <>
+                          <button
+                            style={{ ...s.iconBtn, color: '#03A96B', marginRight: 6 }}
+                            onClick={() => approve(b.id)}
+                            disabled={actionLoading}
+                            title="อนุมัติ"
+                          >
+                            <Check size={14} />
+                          </button>
+                          <button
+                            style={{ ...s.iconBtn, color: '#c62828', marginRight: 6 }}
+                            onClick={() => { setRejectModal(b); setRejectReason('') }}
+                            disabled={actionLoading}
+                            title="ปฏิเสธ"
+                          >
+                            <X size={14} />
+                          </button>
+                        </>
+                      )}
                       {canCancel && (
                         <button style={s.iconBtn} onClick={() => setConfirmDel(b)} title="ยกเลิก">
                           <Trash2 size={14} />
@@ -400,13 +478,62 @@ function Bookings() {
           </div>
         </div>
       )}
+
+      {rejectModal && (
+        <div style={s.overlay} onClick={() => !actionLoading && setRejectModal(null)}>
+          <div style={s.modal} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>ปฏิเสธการจอง</h3>
+              <button
+                style={s.closeBtn}
+                onClick={() => setRejectModal(null)}
+                disabled={actionLoading}
+              ><X size={18} /></button>
+            </div>
+            <div style={s.modalBody}>
+              <p style={{ margin: '0 0 12px' }}>
+                ปฏิเสธ <strong>{rejectModal.title}</strong> ของ {rejectModal.user_email}?
+              </p>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#333', display: 'block', marginBottom: 6 }}>
+                เหตุผล (จะถูกส่งไปอีเมลของผู้จอง)
+              </label>
+              <textarea
+                style={{
+                  width: '100%', padding: '10px 12px',
+                  border: '1.5px solid #dde3dd', borderRadius: 8,
+                  fontSize: 13, minHeight: 70, resize: 'vertical', fontFamily: 'inherit',
+                }}
+                placeholder="เช่น: ห้องมีงานสำคัญอื่น / รายละเอียดการจองไม่ครบ"
+                value={rejectReason}
+                onChange={e => setRejectReason(e.target.value)}
+              />
+            </div>
+            <div style={s.modalFooter}>
+              <button style={s.cancelBtn} onClick={() => setRejectModal(null)} disabled={actionLoading}>
+                ไม่ใช่
+              </button>
+              <button
+                style={{ ...s.confirmBtn, opacity: actionLoading ? 0.6 : 1 }}
+                onClick={reject}
+                disabled={actionLoading}
+              >
+                {actionLoading ? 'กำลังปฏิเสธ...' : 'ยืนยันปฏิเสธ'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function UsersTab({ currentUserId }) {
+function UsersTab({ currentUserId, isAdmin }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
+  const [confirmRole, setConfirmRole] = useState(null)
+  const [roleNext, setRoleNext] = useState('student')
+  const [roleSaving, setRoleSaving] = useState(false)
+  const [roleError, setRoleError] = useState('')
 
   const fetchUsers = () => {
     setLoading(true)
@@ -416,14 +543,28 @@ function UsersTab({ currentUserId }) {
   }
   useEffect(() => { fetchUsers() }, [])
 
-  const toggleRole = async (u) => {
-    const next = u.role === 'admin' ? 'student' : 'admin'
-    if (!confirm(`เปลี่ยน ${u.email} เป็น ${next}?`)) return
+  const openRoleModal = (u) => {
+    setRoleError('')
+    setConfirmRole(u)
+    setRoleNext(u.role === 'admin' ? 'student' : 'admin')
+  }
+  const closeRoleModal = () => {
+    if (roleSaving) return
+    setConfirmRole(null)
+    setRoleError('')
+  }
+  const submitRole = async () => {
+    if (!confirmRole) return
+    setRoleSaving(true)
+    setRoleError('')
     try {
-      await api.patch(`/admin/users/${u.id}/role`, { role: next })
+      await api.patch(`/admin/users/${confirmRole.id}/role`, { role: roleNext })
+      setConfirmRole(null)
       fetchUsers()
     } catch (err) {
-      alert(err.response?.data?.error || 'เปลี่ยน role ไม่สำเร็จ')
+      setRoleError(err.response?.data?.error || 'เปลี่ยน role ไม่สำเร็จ')
+    } finally {
+      setRoleSaving(false)
     }
   }
 
@@ -431,18 +572,20 @@ function UsersTab({ currentUserId }) {
 
   return (
     <div style={s.section}>
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button
-          style={s.exportBtn}
-          onClick={() => downloadCSV(
-            '/admin/users.csv',
-            `kuz-users-${new Date().toISOString().slice(0,10)}.csv`
-          )}
-        >
-          <Download size={14} />
-          <span>Export CSV</span>
-        </button>
-      </div>
+      {isAdmin && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            style={s.exportBtn}
+            onClick={() => downloadCSV(
+              '/admin/users.csv',
+              `kuz-users-${new Date().toISOString().slice(0,10)}.csv`
+            )}
+          >
+            <Download size={14} />
+            <span>Export CSV</span>
+          </button>
+        </div>
+      )}
       <div style={s.tableCard}>
         <table style={s.table}>
           <thead>
@@ -467,8 +610,12 @@ function UsersTab({ currentUserId }) {
                   <td style={s.td}>
                     <span style={{
                       ...s.badge,
-                      color: u.role === 'admin' ? '#03A96B' : '#666',
-                      background: u.role === 'admin' ? '#D9F5E7' : '#f0f0f0',
+                      color: u.role === 'admin' ? '#03A96B'
+                           : u.role === 'staff'    ? '#b45309'
+                           : u.role === 'priority' ? '#0369a1' : '#666',
+                      background: u.role === 'admin' ? '#D9F5E7'
+                                : u.role === 'staff'    ? '#fef3c7'
+                                : u.role === 'priority' ? '#e0f2fe' : '#f0f0f0',
                     }}>
                       {u.role}
                     </span>
@@ -490,10 +637,10 @@ function UsersTab({ currentUserId }) {
                     <span style={{ color: '#c62828' }}>{u.cancelled_total} ยกเลิก</span>
                   </td>
                   <td style={{ ...s.td, textAlign: 'right' }}>
-                    {!isSelf && (
+                    {!isSelf && isAdmin && (
                       <button
                         style={s.iconBtn}
-                        onClick={() => toggleRole(u)}
+                        onClick={() => openRoleModal(u)}
                         title={u.role === 'admin' ? 'ลด role' : 'เลื่อน role'}
                       >
                         <Shield size={14} />
@@ -506,16 +653,556 @@ function UsersTab({ currentUserId }) {
           </tbody>
         </table>
       </div>
+
+      {confirmRole && (
+        <div style={s.overlay} onClick={closeRoleModal}>
+          <div style={s.modal} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>เปลี่ยนสิทธิ์ผู้ใช้</h3>
+              <button style={s.closeBtn} onClick={closeRoleModal} disabled={roleSaving}>
+                <X size={18} />
+              </button>
+            </div>
+            <div style={s.modalBody}>
+              <p style={{ margin: '0 0 16px', fontSize: 14, color: '#333' }}>
+                <strong>{confirmRole.name}</strong>
+                <br />
+                <span style={{ fontSize: 12, color: '#888' }}>{confirmRole.email}</span>
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {['student', 'priority', 'staff', 'admin'].map(r => (
+                  <label
+                    key={r}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 12px', borderRadius: 8,
+                      border: `1.5px solid ${roleNext === r ? '#03A96B' : '#e1e7e1'}`,
+                      background: roleNext === r ? '#F0FBF6' : 'white',
+                      cursor: roleSaving ? 'not-allowed' : 'pointer', fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="role-next"
+                      value={r}
+                      checked={roleNext === r}
+                      onChange={e => setRoleNext(e.target.value)}
+                      disabled={roleSaving}
+                    />
+                    <span style={{ fontWeight: 600 }}>{r}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 11, color: '#888' }}>
+                      {r === 'admin'    && 'จัดการทุกอย่างได้'}
+                      {r === 'staff'    && 'ตรวจสอบ + ยกเลิก booking ผู้อื่นได้'}
+                      {r === 'priority' && 'จองห้อง premium + ไม่จำกัดโควตา'}
+                      {r === 'student'  && 'ทั่วไป — 4 ครั้ง/เดือน'}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {roleError && (
+                <div style={{
+                  marginTop: 12, background: '#fff0f0', border: '1px solid #ffcccc',
+                  color: '#cc3333', padding: '10px 12px', borderRadius: 10, fontSize: 13,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                  <span>{roleError}</span>
+                </div>
+              )}
+            </div>
+            <div style={s.modalFooter}>
+              <button style={s.cancelBtn} onClick={closeRoleModal} disabled={roleSaving}>
+                ไม่ใช่
+              </button>
+              <button
+                style={{
+                  ...s.confirmBtn,
+                  background: roleNext === confirmRole.role ? '#999' : '#03A96B',
+                  opacity: roleSaving || roleNext === confirmRole.role ? 0.6 : 1,
+                }}
+                onClick={submitRole}
+                disabled={roleSaving || roleNext === confirmRole.role}
+              >
+                {roleSaving ? 'กำลังบันทึก...' : 'ยืนยัน'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
+function RoomsTab() {
+  const [subTab, setSubTab] = useState('rooms')
+  return (
+    <div style={s.section}>
+      <div style={s.tabBar}>
+        <TabBtn icon={<Building2 size={14} />} label="ห้อง" active={subTab === 'rooms'}    onClick={() => setSubTab('rooms')} />
+        <TabBtn icon={<Video size={14} />}     label="Zoom Account" active={subTab === 'zoom'} onClick={() => setSubTab('zoom')} />
+      </div>
+      {subTab === 'rooms' ? <RoomsList /> : <ZoomAccountsList />}
+    </div>
+  )
+}
+
+function RoomsList() {
+  const [items, setItems] = useState([])
+  const [zooms, setZooms] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(null) // null | object (new) | object (existing)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const fetchAll = async () => {
+    setLoading(true)
+    try {
+      const [r, z] = await Promise.all([
+        api.get('/admin/rooms'),
+        api.get('/admin/zoom-accounts'),
+      ])
+      setItems(r.data)
+      setZooms(z.data)
+    } finally { setLoading(false) }
+  }
+  useEffect(() => { fetchAll() }, [])
+
+  const openNew = () => {
+    setError('')
+    setEditing({ name: '', capacity: 100, zoom_account_id: '', is_priority_only: false, is_active: true })
+  }
+  const openEdit = (room) => {
+    setError('')
+    setEditing({ ...room, zoom_account_id: room.zoom_account_id || '' })
+  }
+  const close = () => { if (!saving) { setEditing(null); setError('') } }
+
+  const save = async () => {
+    setError('')
+    if (!editing.name?.trim()) { setError('ต้องระบุชื่อห้อง'); return }
+    const cap = parseInt(editing.capacity, 10)
+    if (!cap || cap < 1 || cap > 10000) { setError('capacity ต้อง 1-10000'); return }
+    setSaving(true)
+    try {
+      const body = {
+        name: editing.name.trim(),
+        capacity: cap,
+        zoom_account_id: editing.zoom_account_id || null,
+        is_priority_only: !!editing.is_priority_only,
+        is_active: editing.is_active !== false,
+      }
+      if (editing.id) {
+        await api.patch(`/admin/rooms/${editing.id}`, body)
+      } else {
+        await api.post('/admin/rooms', body)
+      }
+      setEditing(null)
+      await fetchAll()
+    } catch (err) {
+      setError(err.response?.data?.error || 'บันทึกไม่สำเร็จ')
+    } finally { setSaving(false) }
+  }
+
+  const deactivate = async (room) => {
+    if (!confirm(`ปิดใช้งานห้อง "${room.name}"? booking เก่ายังคงอยู่ แต่ห้ามจองใหม่`)) return
+    try {
+      await api.delete(`/admin/rooms/${room.id}`)
+      await fetchAll()
+    } catch (err) {
+      alert(err.response?.data?.error || 'ปิดใช้งานไม่สำเร็จ')
+    }
+  }
+
+  if (loading) return <div style={s.loading}>กำลังโหลด...</div>
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button style={s.exportBtn} onClick={openNew}>
+          <Plus size={14} /> <span>เพิ่มห้อง</span>
+        </button>
+      </div>
+      <div style={s.tableCard}>
+        <table style={s.table}>
+          <thead>
+            <tr>
+              <th style={s.th}>ชื่อห้อง</th>
+              <th style={s.th}>Capacity</th>
+              <th style={s.th}>Zoom Account</th>
+              <th style={s.th}>Priority only</th>
+              <th style={s.th}>สถานะ</th>
+              <th style={s.th}>จองล่วงหน้า</th>
+              <th style={s.th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(r => (
+              <tr key={r.id}>
+                <td style={s.td}><strong>{r.name}</strong></td>
+                <td style={s.td}>{r.capacity} คน</td>
+                <td style={s.td}>
+                  {r.zoom_account_label || <span style={s.tdMuted}>— (ENV default)</span>}
+                </td>
+                <td style={s.td}>
+                  {r.is_priority_only
+                    ? <span style={{ ...s.badge, color: '#0369a1', background: '#e0f2fe' }}>Priority</span>
+                    : <span style={s.tdMuted}>ทุกคน</span>}
+                </td>
+                <td style={s.td}>
+                  {r.is_active
+                    ? <span style={{ ...s.badge, color: '#1FBA7C', background: '#D9F5E7' }}>ใช้งาน</span>
+                    : <span style={{ ...s.badge, color: '#888', background: '#f0f0f0' }}>ปิด</span>}
+                </td>
+                <td style={s.td}>{r.upcoming_count}</td>
+                <td style={{ ...s.td, textAlign: 'right' }}>
+                  <button style={s.iconBtn} onClick={() => openEdit(r)} title="แก้ไข">
+                    <Edit3 size={14} />
+                  </button>
+                  {r.is_active && (
+                    <button
+                      style={{ ...s.iconBtn, marginLeft: 6, color: '#c62828' }}
+                      onClick={() => deactivate(r)}
+                      title="ปิดใช้งาน"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {items.length === 0 && (
+              <tr><td colSpan={7} style={s.emptyRow}>ยังไม่มีห้อง</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <div style={s.overlay} onClick={close}>
+          <div style={s.modal} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>{editing.id ? 'แก้ไขห้อง' : 'เพิ่มห้อง'}</h3>
+              <button style={s.closeBtn} onClick={close} disabled={saving}><X size={18} /></button>
+            </div>
+            <div style={s.modalBody}>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 6 }}>
+                  ชื่อห้อง
+                </label>
+                <input
+                  style={{ ...s.searchInput, paddingLeft: 12 }}
+                  value={editing.name}
+                  onChange={e => setEditing({ ...editing, name: e.target.value })}
+                  placeholder="เช่น KU CPE Pro Room"
+                />
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 6 }}>
+                  Capacity (จำนวนคนสูงสุด)
+                </label>
+                <select
+                  style={{ ...s.select, width: '100%' }}
+                  value={editing.capacity}
+                  onChange={e => setEditing({ ...editing, capacity: parseInt(e.target.value, 10) })}
+                >
+                  <option value={100}>100 คน (Free / Basic)</option>
+                  <option value={300}>300 คน</option>
+                  <option value={500}>500 คน</option>
+                  <option value={1000}>1000 คน</option>
+                </select>
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 6 }}>
+                  Zoom Account
+                </label>
+                <select
+                  style={{ ...s.select, width: '100%' }}
+                  value={editing.zoom_account_id}
+                  onChange={e => setEditing({ ...editing, zoom_account_id: e.target.value })}
+                >
+                  <option value="">— ใช้ ENV default (Free plan 40 นาที)</option>
+                  {zooms.map(z => (
+                    <option key={z.id} value={z.id}>{z.label}</option>
+                  ))}
+                </select>
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={!!editing.is_priority_only}
+                  onChange={e => setEditing({ ...editing, is_priority_only: e.target.checked })}
+                />
+                จองได้เฉพาะ user role priority/admin
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={editing.is_active !== false}
+                  onChange={e => setEditing({ ...editing, is_active: e.target.checked })}
+                />
+                เปิดใช้งาน
+              </label>
+              {error && (
+                <div style={{
+                  marginTop: 12, background: '#fff0f0', border: '1px solid #ffcccc',
+                  color: '#cc3333', padding: '10px 12px', borderRadius: 10, fontSize: 13,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <AlertCircle size={16} /> <span>{error}</span>
+                </div>
+              )}
+            </div>
+            <div style={s.modalFooter}>
+              <button style={s.cancelBtn} onClick={close} disabled={saving}>ยกเลิก</button>
+              <button
+                style={{ ...s.confirmBtn, background: '#03A96B', opacity: saving ? 0.6 : 1 }}
+                onClick={save}
+                disabled={saving}
+              >
+                {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function ZoomAccountsList() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const fetchAll = () => {
+    setLoading(true)
+    api.get('/admin/zoom-accounts').then(r => setItems(r.data)).finally(() => setLoading(false))
+  }
+  useEffect(fetchAll, [])
+
+  const [healthMap, setHealthMap] = useState({}) // id → {ok, msg, loading}
+
+  const openNew = () => {
+    setError('')
+    setEditing({ label: '', account_id: '', client_id: '', client_secret: '', max_attendees: 300 })
+  }
+  const openEdit = (z) => {
+    setError('')
+    setEditing({
+      id: z.id, label: z.label, account_id: z.account_id, client_id: z.client_id,
+      client_secret: '',
+      max_attendees: z.max_attendees || 300,
+    })
+  }
+  const close = () => { if (!saving) { setEditing(null); setError('') } }
+
+  const save = async () => {
+    setError('')
+    if (!editing.label?.trim() || !editing.account_id?.trim() || !editing.client_id?.trim()) {
+      setError('label, account_id, client_id ต้องระบุ'); return
+    }
+    if (!editing.id && !editing.client_secret) {
+      setError('ต้องระบุ client_secret ตอนสร้างใหม่'); return
+    }
+    const m = parseInt(editing.max_attendees, 10)
+    if (!m || m < 1 || m > 10000) { setError('max_attendees ต้อง 1-10000'); return }
+    setSaving(true)
+    try {
+      const body = {
+        label: editing.label.trim(),
+        account_id: editing.account_id.trim(),
+        client_id: editing.client_id.trim(),
+        max_attendees: m,
+      }
+      if (editing.client_secret) body.client_secret = editing.client_secret
+      if (editing.id) {
+        await api.patch(`/admin/zoom-accounts/${editing.id}`, body)
+      } else {
+        await api.post('/admin/zoom-accounts', body)
+      }
+      setEditing(null)
+      fetchAll()
+    } catch (err) {
+      setError(err.response?.data?.error || 'บันทึกไม่สำเร็จ')
+    } finally { setSaving(false) }
+  }
+
+  const testHealth = async (z) => {
+    setHealthMap(h => ({ ...h, [z.id]: { loading: true } }))
+    try {
+      const res = await api.get(`/admin/zoom-accounts/${z.id}/health`)
+      setHealthMap(h => ({ ...h, [z.id]: { ok: res.data.ok, msg: res.data.message || res.data.error } }))
+    } catch (err) {
+      setHealthMap(h => ({ ...h, [z.id]: { ok: false, msg: err.response?.data?.error || err.message } }))
+    }
+  }
+
+  const del = async (z) => {
+    if (!confirm(`ลบ Zoom account "${z.label}"?`)) return
+    try {
+      await api.delete(`/admin/zoom-accounts/${z.id}`)
+      fetchAll()
+    } catch (err) {
+      alert(err.response?.data?.error || 'ลบไม่สำเร็จ')
+    }
+  }
+
+  if (loading) return <div style={s.loading}>กำลังโหลด...</div>
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button style={s.exportBtn} onClick={openNew}>
+          <Plus size={14} /> <span>เพิ่ม Zoom Account</span>
+        </button>
+      </div>
+      <div style={s.tableCard}>
+        <table style={s.table}>
+          <thead>
+            <tr>
+              <th style={s.th}>Label</th>
+              <th style={s.th}>Account ID</th>
+              <th style={s.th}>Max attendees</th>
+              <th style={s.th}>Secret</th>
+              <th style={s.th}>ห้องที่ใช้</th>
+              <th style={s.th}>Health</th>
+              <th style={s.th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(z => {
+              const h = healthMap[z.id]
+              return (
+                <tr key={z.id}>
+                  <td style={s.td}><strong>{z.label}</strong></td>
+                  <td style={{ ...s.td, fontSize: 11, fontFamily: 'monospace' }}>{z.account_id}</td>
+                  <td style={s.td}>{z.max_attendees} คน</td>
+                  <td style={{ ...s.td, fontSize: 11, fontFamily: 'monospace' }}>{z.client_secret_masked}</td>
+                  <td style={s.td}>{z.room_count}</td>
+                  <td style={s.td}>
+                    {h?.loading ? (
+                      <span style={{ fontSize: 11, color: '#888' }}>กำลังทดสอบ...</span>
+                    ) : h ? (
+                      <span style={{
+                        ...s.badge,
+                        color: h.ok ? '#1FBA7C' : '#c62828',
+                        background: h.ok ? '#D9F5E7' : '#ffebee',
+                      }} title={h.msg}>{h.ok ? 'OK' : 'Fail'}</span>
+                    ) : (
+                      <button
+                        style={{ ...s.iconBtn, fontSize: 11, padding: '4px 8px', width: 'auto' }}
+                        onClick={() => testHealth(z)}
+                      >Test</button>
+                    )}
+                  </td>
+                  <td style={{ ...s.td, textAlign: 'right' }}>
+                    <button style={s.iconBtn} onClick={() => openEdit(z)} title="แก้ไข">
+                      <Edit3 size={14} />
+                    </button>
+                    <button
+                      style={{ ...s.iconBtn, marginLeft: 6, color: '#c62828' }}
+                      onClick={() => del(z)}
+                      title="ลบ"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+            {items.length === 0 && (
+              <tr><td colSpan={7} style={s.emptyRow}>ยังไม่มี Zoom account</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <div style={s.overlay} onClick={close}>
+          <div style={s.modal} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>{editing.id ? 'แก้ไข Zoom Account' : 'เพิ่ม Zoom Account'}</h3>
+              <button style={s.closeBtn} onClick={close} disabled={saving}><X size={18} /></button>
+            </div>
+            <div style={s.modalBody}>
+              {[
+                { key: 'label',         label: 'Label (ชื่อแสดง)' },
+                { key: 'account_id',    label: 'Account ID' },
+                { key: 'client_id',     label: 'Client ID' },
+                { key: 'client_secret', label: editing.id ? 'Client Secret (เว้นว่าง = ไม่เปลี่ยน)' : 'Client Secret', secret: true },
+              ].map(f => (
+                <div key={f.key} style={{ marginBottom: 12 }}>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 6 }}>
+                    {f.label}
+                  </label>
+                  <input
+                    style={{ ...s.searchInput, paddingLeft: 12 }}
+                    type={f.secret ? 'password' : 'text'}
+                    value={editing[f.key] || ''}
+                    onChange={e => setEditing({ ...editing, [f.key]: e.target.value })}
+                  />
+                </div>
+              ))}
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 6 }}>
+                  Max attendees (license limit ของ plan นี้)
+                </label>
+                <select
+                  style={{ ...s.select, width: '100%' }}
+                  value={editing.max_attendees || 300}
+                  onChange={e => setEditing({ ...editing, max_attendees: parseInt(e.target.value, 10) })}
+                >
+                  <option value={100}>100 (Basic)</option>
+                  <option value={300}>300 (Pro)</option>
+                  <option value={500}>500 (Business)</option>
+                  <option value={1000}>1000 (Business Plus)</option>
+                </select>
+              </div>
+              {error && (
+                <div style={{
+                  marginTop: 6, background: '#fff0f0', border: '1px solid #ffcccc',
+                  color: '#cc3333', padding: '10px 12px', borderRadius: 10, fontSize: 13,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <AlertCircle size={16} /> <span>{error}</span>
+                </div>
+              )}
+            </div>
+            <div style={s.modalFooter}>
+              <button style={s.cancelBtn} onClick={close} disabled={saving}>ยกเลิก</button>
+              <button
+                style={{ ...s.confirmBtn, background: '#03A96B', opacity: saving ? 0.6 : 1 }}
+                onClick={save}
+                disabled={saving}
+              >
+                {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 const ACTION_LABELS = {
-  booking_created:    { text: 'สร้างการจอง',    color: '#1FBA7C', bg: '#D9F5E7' },
-  series_created:     { text: 'สร้าง series',    color: '#03A96B', bg: '#D9F5E7' },
-  booking_cancelled:  { text: 'ยกเลิก',          color: '#c62828', bg: '#ffebee' },
-  admin_cancelled:    { text: 'Admin ยกเลิก',    color: '#b91c1c', bg: '#fee2e2' },
-  role_changed:       { text: 'เปลี่ยน role',    color: '#0369a1', bg: '#e0f2fe' },
+  booking_created:           { text: 'สร้างการจอง',     color: '#1FBA7C', bg: '#D9F5E7' },
+  booking_pending_approval:  { text: 'รออนุมัติ',       color: '#b45309', bg: '#fef3c7' },
+  booking_approved:          { text: 'อนุมัติ',         color: '#1FBA7C', bg: '#D9F5E7' },
+  booking_rejected:          { text: 'ปฏิเสธ',          color: '#c62828', bg: '#ffebee' },
+  booking_transferred:       { text: 'โอนเจ้าของ',      color: '#0369a1', bg: '#e0f2fe' },
+  series_created:            { text: 'สร้าง series',    color: '#03A96B', bg: '#D9F5E7' },
+  booking_cancelled:         { text: 'ยกเลิก',          color: '#c62828', bg: '#ffebee' },
+  admin_cancelled:           { text: 'Admin ยกเลิก',    color: '#b91c1c', bg: '#fee2e2' },
+  role_changed:              { text: 'เปลี่ยน role',    color: '#0369a1', bg: '#e0f2fe' },
+  room_created:              { text: 'สร้างห้อง',        color: '#0369a1', bg: '#e0f2fe' },
+  room_updated:              { text: 'แก้ห้อง',         color: '#0369a1', bg: '#e0f2fe' },
+  room_deactivated:          { text: 'ปิดห้อง',         color: '#888',    bg: '#f0f0f0' },
+  zoom_account_created:      { text: 'เพิ่ม Zoom acc.', color: '#0369a1', bg: '#e0f2fe' },
+  zoom_account_updated:      { text: 'แก้ Zoom acc.',   color: '#0369a1', bg: '#e0f2fe' },
+  zoom_account_deleted:      { text: 'ลบ Zoom acc.',    color: '#888',    bg: '#f0f0f0' },
 }
 
 function AuditTab() {
@@ -568,7 +1255,7 @@ function AuditTab() {
                     <td style={s.td}>
                       <div style={{ fontSize: 12 }}>
                         {new Date(a.created_at).toLocaleString('th-TH', {
-                          dateStyle: 'short', timeStyle: 'medium'
+                          dateStyle: 'short', timeStyle: 'medium', timeZone: 'Asia/Bangkok'
                         })}
                       </div>
                     </td>

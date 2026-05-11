@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -c src/services/bookingService.js)",
+      "Bash(node -c src/services/roomService.js)",
+      "Bash(node -c src/routes/admin.js)",
+      "Bash(node -c src/routes/bookings.js)",
+      "Bash(npx --yes esbuild --loader:.jsx=jsx --log-level=warning src/pages/book.jsx)",
+      "Bash(npx --yes esbuild --loader:.jsx=jsx --log-level=warning src/pages/admin.jsx)"
+    ]
+  }
+}
