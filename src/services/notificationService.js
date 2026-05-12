@@ -6,6 +6,8 @@ const BOOKING_URL    = process.env.N8N_NOTIFICATION_WEBHOOK_URL || process.env.N
 const CANCEL_URL     = process.env.N8N_CANCELLATION_WEBHOOK_URL;
 const REMINDER_URL   = process.env.N8N_REMINDER_WEBHOOK_URL;
 const COHOST_URL     = process.env.N8N_COHOST_INVITE_WEBHOOK_URL;
+const PENDING_APPROVAL_URL = process.env.N8N_PENDING_APPROVAL_WEBHOOK_URL;
+const APPROVAL_DECISION_URL = process.env.N8N_APPROVAL_DECISION_WEBHOOK_URL;
 
 async function sendWebhook(url, payload, label) {
   if (!url) {
@@ -78,9 +80,47 @@ async function sendCoHostInvitation(booking, coHostEmail) {
   }, 'cohost_invitation');
 }
 
+// แจ้ง staff/admin เมื่อมีคำขอจองห้อง Pro plan รออนุมัติ
+// approvers = [{ email, name }] — n8n loop ส่งทีละคน
+async function sendPendingApprovalRequest(booking, approvers) {
+  await sendWebhook(PENDING_APPROVAL_URL, {
+    type:        'booking_pending_approval',
+    booking_id:  booking.id,
+    requester_email: booking.user_email,
+    requester_name:  booking.user_name,
+    title:       booking.title,
+    date:        formatDate(booking.start_time),
+    time:        `${formatTime(booking.start_time)} - ${formatTime(booking.end_time)}`,
+    room_name:   booking.room_name || null,
+    room_capacity: booking.room_capacity || null,
+    co_hosts:    booking.co_host_emails || [],
+    notes:       booking.notes || null,
+    approvers:   approvers,
+  }, 'booking_pending_approval');
+}
+
+// แจ้ง user เมื่อ booking ถูก approve หรือ reject — ใช้ webhook เดียว branch ตาม "decision"
+async function sendApprovalDecision(booking, decision, reason = null) {
+  await sendWebhook(APPROVAL_DECISION_URL, {
+    type:      'booking_approval_decision',
+    decision:  decision,
+    email:     booking.user_email,
+    name:      booking.user_name,
+    title:     booking.title,
+    date:      formatDate(booking.start_time),
+    time:      `${formatTime(booking.start_time)} - ${formatTime(booking.end_time)}`,
+    room_name: booking.room_name || null,
+    zoom_link: decision === 'approved' ? booking.zoom_join_url : null,
+    reason:    decision === 'rejected' ? reason : null,
+    booking_id: booking.id,
+  }, `booking_${decision}`);
+}
+
 module.exports = {
   sendBookingConfirmation,
   sendCancellationNotification,
   sendReminderNotification,
   sendCoHostInvitation,
+  sendPendingApprovalRequest,
+  sendApprovalDecision,
 };

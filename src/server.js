@@ -10,6 +10,8 @@ app.listen(PORT, () => {
 
 const pool = require('../config/db');
 const reminderService = require('./services/reminderService');
+const inAppNotif = require('./services/inAppNotificationService');
+const bookingService = require('./services/bookingService');
 
 // auto-complete bookings ที่ end_time ผ่านไปแล้ว — ทุก 5 นาที
 cron.schedule('*/5 * * * *', async () => {
@@ -27,5 +29,23 @@ cron.schedule('* * * * *', async () => {
     await reminderService.sendDueReminders();
   } catch (err) {
     console.error('Cron reminder error:', err.message);
+  }
+});
+
+// ลบ notification ที่อ่านแล้ว > 30 วัน — ทุกวันตี 3
+cron.schedule('0 3 * * *', async () => {
+  try {
+    await inAppNotif.cleanupOld();
+  } catch (err) {
+    console.error('Cron notification cleanup error:', err.message);
+  }
+});
+
+// auto-expire pending_approval ที่ start_time ผ่านไปแล้ว — ทุก 15 นาที
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    await bookingService.autoExpirePending();
+  } catch (err) {
+    console.error('Cron pending-expire error:', err.message);
   }
 });

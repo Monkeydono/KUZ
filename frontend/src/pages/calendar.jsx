@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { AlertCircle, Check, X } from 'lucide-react'
 import api from '../api'
 import { useUser } from '../useUser'
@@ -24,22 +24,64 @@ function Calendar() {
   const [bookedSlots, setBookedSlots] = useState([])
   const [loading, setLoading] = useState(false)
 
+  const [rooms, setRooms] = useState([])
+  // group rooms by capacity tier (Pro plan ในอนาคตจะมีหลายห้อง/tier → ดึง count มาแสดง)
+  const tiers = useMemo(() => {
+    const map = new Map()
+    for (const r of rooms) {
+      if (r.is_priority_only) continue  // ถ้ามีจริง user ทั่วไปไม่ต้องเห็นใน selector
+      const t = map.get(r.capacity) || {
+        capacity: r.capacity, total: 0, anyReady: false, anyZoomAccount: false,
+      }
+      t.total += 1
+      if (!r.needs_zoom_pro) t.anyReady = true
+      if (r.has_zoom_account) t.anyZoomAccount = true
+      map.set(r.capacity, t)
+    }
+    return Array.from(map.values()).sort((a, b) => a.capacity - b.capacity)
+  }, [rooms])
+
+  const [selectedCapacity, setSelectedCapacity] = useState(null)
+  const selectedTier = tiers.find(t => t.capacity === selectedCapacity) || null
+  const [totalRooms, setTotalRooms] = useState(0)
+
   const [modalHour, setModalHour] = useState(null)
-  const [modalForm, setModalForm] = useState({ title: '', startTime: '', endTime: '', coHosts: '', notes: '' })
+  const [modalForm, setModalForm] = useState({
+    title: '', startTime: '', endTime: '', coHosts: '', notes: '',
+    recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
+  })
   const [modalLoading, setModalLoading] = useState(false)
   const [modalError, setModalError] = useState('')
   const [modalSuccess, setModalSuccess] = useState(false)
 
+  // โหลด room list ครั้งเดียวตอน mount + default เลือก tier แรกที่ใช้งานได้
   useEffect(() => {
-    fetchBookings(selectedDate)
-  }, [selectedDate])
+    api.get('/bookings/rooms')
+      .then(res => setRooms(res.data || []))
+      .catch(err => console.error('fetch rooms failed:', err))
+  }, [])
+
+  // default-select tier แรกที่พร้อมใช้ (capacity น้อยสุด)
+  useEffect(() => {
+    if (selectedCapacity == null && tiers.length > 0) {
+      const firstReady = tiers.find(t => t.anyReady)
+      if (firstReady) setSelectedCapacity(firstReady.capacity)
+    }
+  }, [tiers, selectedCapacity])
+
+  useEffect(() => {
+    if (selectedCapacity != null) fetchBookings(selectedDate)
+  }, [selectedDate, selectedCapacity])
 
   const fetchBookings = async (date) => {
     setLoading(true)
     try {
       const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`
-      const res = await api.get(`/bookings/available?date=${dateStr}`)
-      setBookedSlots(res.data)
+      const res = await api.get('/bookings/available', {
+        params: { date: dateStr, capacity: selectedCapacity },
+      })
+      setBookedSlots(res.data.bookings || [])
+      setTotalRooms(res.data.total_rooms || 0)
     } catch (err) {
       console.error(err)
     } finally {
@@ -66,16 +108,25 @@ function Calendar() {
     ]
   }
 
-  // hour-row [hour, hour+1) overlaps booking [s, e) if s < hour+1 AND e > hour
-  const isHourFullyBooked = (hour) => bookedSlots.some(slot => {
-    const [s, e] = slotToHours(slot)
-    return s <= hour && e >= hour + 1
-  })
-
-  const overlapsBooking = (startHour, endHour) => bookedSlots.some(slot => {
+  // นับจำนวน booking ที่ overlap [startHour, endHour) — รองรับ Pro plan ที่มีหลายห้อง/tier
+  const countBookingsOverlap = (startHour, endHour) => bookedSlots.filter(slot => {
     const [s, e] = slotToHours(slot)
     return s < endHour && e > startHour
-  })
+  }).length
+
+  // slot เต็มเมื่อทุกห้องใน tier ถูกจอง (Free plan: total=1 → ใครจองก็เต็ม / Pro plan: ต้องครบ N)
+  // หา "fully covered" = booking ครอบทั้ง [hour, hour+1) — นับเฉพาะตัวที่ครอบเต็ม
+  const isHourFullyBooked = (hour) => {
+    if (totalRooms <= 0) return false
+    const fullyCovered = bookedSlots.filter(slot => {
+      const [s, e] = slotToHours(slot)
+      return s <= hour && e >= hour + 1
+    }).length
+    return fullyCovered >= totalRooms
+  }
+
+  // กระแสเดิมที่เคยใช้ overlapsBooking → เปลี่ยนเป็นนับ vs totalRooms
+  const overlapsBooking = (startHour, endHour) => countBookingsOverlap(startHour, endHour) >= totalRooms
 
   const floatToHHMM = (f) => {
     const h = Math.floor(f)
@@ -86,24 +137,27 @@ function Calendar() {
   const openModal = (hour) => {
     if (isHourFullyBooked(hour)) return
 
-    // earliest start = end_of_prev_booking + 1 นาที (gap บังคับ)
-    // แล้ว round up ถึง 5 นาทีที่ใกล้สุด
+    // Free plan (1 ห้อง/tier): จำกัด earliest/latest โดยอิง booking ที่มี
+    // Pro plan (หลายห้อง): ยังเหลือห้องอยู่ → ให้จองทั้งช่วง hour..hour+1 ได้เลย
     let earliest = hour
-    bookedSlots.forEach(slot => {
-      const [s, e] = slotToHours(slot)
-      if (s < hour + 1 && e > hour && e > earliest) earliest = e
-    })
-    if (earliest > hour) earliest += 1 / 60   // +1 นาที buffer ถ้ามี booking ก่อน
-    earliest = Math.ceil(earliest * 12) / 12
-    if (earliest >= hour + 1) return
-
-    // หา latest end ที่ว่าง — ก่อน booking ตัวถัดไป
     let latestEnd = hour + 1
-    bookedSlots.forEach(slot => {
-      const [s] = slotToHours(slot)
-      if (s >= earliest && s < latestEnd) latestEnd = s
-    })
-    const defaultEnd = Math.min(earliest + 0.5, latestEnd, earliest + 40 / 60)
+    if (totalRooms <= 1) {
+      bookedSlots.forEach(slot => {
+        const [s, e] = slotToHours(slot)
+        if (s < hour + 1 && e > hour && e > earliest) earliest = e
+      })
+      if (earliest > hour) earliest += 1 / 60
+      earliest = Math.ceil(earliest * 12) / 12
+      if (earliest >= hour + 1) return
+
+      bookedSlots.forEach(slot => {
+        const [s] = slotToHours(slot)
+        if (s >= earliest && s < latestEnd) latestEnd = s
+      })
+    }
+    // default duration: Pro=30นาที, Free=ใช้เต็ม 40นาที (max)
+    const maxBlock = selectedTier?.anyZoomAccount ? 1 : 40 / 60
+    const defaultEnd = Math.min(earliest + 0.5, latestEnd, earliest + maxBlock)
 
     setModalHour(hour)
     setModalForm({
@@ -112,6 +166,7 @@ function Calendar() {
       endTime: floatToHHMM(defaultEnd),
       coHosts: '',
       notes: '',
+      recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
     })
     setModalError('')
     setModalSuccess(false)
@@ -138,6 +193,11 @@ function Calendar() {
       setModalError('เวลาจองอนุญาตเฉพาะ 08:00 - 24:00')
       return
     }
+    // ห้อง Pro plan (capacity > 100) ต้องระบุเหตุผล
+    if (selectedTier && selectedTier.capacity > 100 && !isAdmin && !modalForm.notes.trim()) {
+      setModalError(`กรุณาระบุเหตุผลการจอง — ห้อง ${selectedTier.capacity} คนต้องรออนุมัติ`)
+      return
+    }
 
     const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth()+1).padStart(2,'0')}-${String(selectedDate.getDate()).padStart(2,'0')}`
     const startTime = `${dateStr}T${modalForm.startTime}:00+07:00`
@@ -148,7 +208,14 @@ function Calendar() {
     try {
       setModalLoading(true)
       const payload = { title: modalForm.title, startTime, endTime, coHostEmails }
+      if (selectedCapacity != null) payload.capacity = selectedCapacity
       if (modalForm.notes.trim()) payload.notes = modalForm.notes.trim()
+      if (modalForm.recurringEnabled && modalForm.recurringCount > 1) {
+        payload.recurring = {
+          freq: modalForm.recurringFreq,
+          count: parseInt(modalForm.recurringCount, 10),
+        }
+      }
       await api.post('/bookings', payload)
       setModalSuccess(true)
       await fetchBookings(selectedDate)
@@ -201,7 +268,31 @@ function Calendar() {
     return (eh * 60 + em) - (sh * 60 + sm)
   }
   const modalDuration = calcModalDuration()
-  const modalOverLimit = modalDuration !== null && (modalDuration <= 0 || modalDuration > 40)
+  // ห้อง Pro plan ไม่จำกัด 40 นาที — Free plan จำกัด
+  const maxDurationMin = selectedTier?.anyZoomAccount ? 24 * 60 : 40
+  const modalOverLimit = modalDuration !== null && (modalDuration <= 0 || modalDuration > maxDurationMin)
+  // ห้อง Pro plan ห้ามจอง recurring (กัน flood approval queue)
+  const recurringBlocked = selectedTier && selectedTier.capacity > 100 && !isAdmin
+  const needsApproval = selectedTier && selectedTier.capacity > 100 && !isAdmin
+
+  const modalSeriesPreview = (() => {
+    if (!modalForm.recurringEnabled) return null
+    const count = parseInt(modalForm.recurringCount, 10)
+    if (!count || count < 2 || !modalForm.startTime) return null
+    const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth()+1).padStart(2,'0')}-${String(selectedDate.getDate()).padStart(2,'0')}`
+    const base = new Date(`${dateStr}T${modalForm.startTime}:00+07:00`)
+    if (isNaN(base)) return null
+    const intervalMs = (modalForm.recurringFreq === 'daily' ? 1 : 7) * 24 * 60 * 60 * 1000
+    const last = new Date(base.getTime() + (count - 1) * intervalMs)
+    const fmt = d => d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Bangkok' })
+    const aheadDays = (last - new Date()) / (24 * 60 * 60 * 1000)
+    return {
+      count,
+      firstLabel: fmt(base),
+      lastLabel:  fmt(last),
+      over: !isAdmin && aheadDays > 30,
+    }
+  })()
 
   return (
     <div style={s.root}>
@@ -325,7 +416,31 @@ function Calendar() {
                 <span style={s.dot} /> คลิกช่วงเวลาว่างเพื่อจองห้อง Zoom
               </p>
             </div>
+            {tiers.length > 0 && (
+              <div style={s.roomSelectWrap}>
+                <label style={s.roomSelectLabel}>ขนาดห้องประชุม</label>
+                <select
+                  style={s.roomSelect}
+                  value={selectedCapacity ?? ''}
+                  onChange={e => setSelectedCapacity(parseInt(e.target.value, 10))}
+                >
+                  {tiers.map(t => (
+                    <option key={t.capacity} value={t.capacity} disabled={!t.anyReady}>
+                      {t.capacity} คน
+                      {!t.anyReady ? ' · ยังไม่พร้อม' : (t.total > 1 ? ` · ${t.total} ห้อง` : '')}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
+
+          {selectedTier && selectedTier.capacity > 100 && !isAdmin && (
+            <div style={s.proWarnBanner}>
+              ⚠ ห้อง {selectedTier.capacity} คน (Pro plan) <strong>ต้องรออนุมัติ</strong>จาก staff/admin
+              ก่อนจึงจะได้รับลิงก์ Zoom — กรุณาระบุเหตุผลในการจอง
+            </div>
+          )}
 
           {loading ? (
             <div style={s.loadingBox}>
@@ -374,7 +489,16 @@ function Calendar() {
                 {/* เส้นปิดที่ตำแหน่ง 24:00 — ไม่มี body, ไม่ clickable */}
                 <div style={s.endLine} />
 
-                {bookedSlots.map((slot, i) => {
+                {/* group bookings ที่มีเวลาเดียวกันเข้าด้วยกัน — แสดงเป็น block เดียวพร้อม count
+                    (รองรับ Pro plan ที่มีหลายห้อง/tier — เห็น "เหลือ X/Y") */}
+                {Object.values(bookedSlots.reduce((acc, slot) => {
+                  const key = `${slot.start_time}_${slot.end_time}`
+                  if (!acc[key]) acc[key] = { ...slot, count: 0, anyMine: false, anyCoHost: false }
+                  acc[key].count += 1
+                  if (slot.is_mine)    acc[key].anyMine = true
+                  if (slot.is_co_host) acc[key].anyCoHost = true
+                  return acc
+                }, {})).map((slot, i) => {
                   const start = new Date(slot.start_time)
                   const end = new Date(slot.end_time)
                   const startFloat = start.getHours() + start.getMinutes() / 60
@@ -385,13 +509,13 @@ function Calendar() {
                   const isCompact = height < 44
                   const timeLabel = `${start.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })} – ${end.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })}`
 
-                  // 3 รูปแบบ: ของตัวเอง / co-host / คนอื่น
-                  const variant = slot.is_mine    ? s.bookedVariantMine
-                                : slot.is_co_host ? s.bookedVariantCoHost
+                  const variant = slot.anyMine    ? s.bookedVariantMine
+                                : slot.anyCoHost  ? s.bookedVariantCoHost
                                 : s.bookedVariantOther
-                  const label = slot.is_mine    ? 'Your Reserving'
-                              : slot.is_co_host ? 'Your Reserving (Co-Host)'
+                  const label = slot.anyMine    ? 'Your Reserving'
+                              : slot.anyCoHost  ? 'Your Reserving (Co-Host)'
                               : 'Reserved'
+                  const remaining = totalRooms - slot.count
 
                   return (
                     <div
@@ -409,6 +533,11 @@ function Calendar() {
                         color: variant.nameColor,
                       }}>
                         {label}
+                        {totalRooms > 1 && (
+                          <span style={s.countBadge}>
+                            {remaining > 0 ? `เหลือ ${remaining}/${totalRooms}` : `เต็ม ${totalRooms}/${totalRooms}`}
+                          </span>
+                        )}
                       </span>
                       <span style={isCompact ? s.bookedTimeCompact : s.bookedTime}>
                         {timeLabel}
@@ -445,6 +574,11 @@ function Calendar() {
                 <h3 style={s.modalTitle}>จองห้องประชุม</h3>
                 <p style={s.modalSub}>
                   {selectedDate.getDate()} {MONTHS[selectedDate.getMonth()]} {selectedDate.getFullYear() + 543}
+                  {selectedTier && (
+                    <> · <strong>{selectedTier.capacity} คน</strong>
+                    ({selectedTier.anyZoomAccount ? 'Pro' : 'Free'}
+                    {selectedTier.total > 1 ? ` · ${selectedTier.total} ห้อง` : ''})</>
+                  )}
                 </p>
               </div>
               <button style={s.closeBtn} className="ku-close" onClick={closeModal}>
@@ -508,16 +642,80 @@ function Calendar() {
 
               <div style={s.field}>
                 <label style={s.label}>
-                  หมายเหตุ / เหตุผลการจอง <span style={{ color: '#888', fontWeight: 400, fontSize: 11 }}>— ไม่บังคับ</span>
+                  หมายเหตุ / เหตุผลการจอง
+                  {needsApproval
+                    ? <span style={s.req}> *</span>
+                    : <span style={{ color: '#888', fontWeight: 400, fontSize: 11 }}> — ไม่บังคับ</span>}
                 </label>
                 <textarea
                   style={{ ...s.input, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
-                  placeholder="เช่น: ประชุมโครงการ / สอบ Defense"
+                  placeholder={needsApproval ? 'เช่น: สัมมนาคณะ / กิจกรรมหลักของภาควิชา' : 'เช่น: ประชุมโครงการ / สอบ Defense'}
                   value={modalForm.notes}
                   onChange={e => setModalForm({ ...modalForm, notes: e.target.value })}
                   disabled={modalSuccess}
                   maxLength={1000}
                 />
+              </div>
+
+              <div style={s.field}>
+                <label style={{
+                  ...s.label, display: 'flex', alignItems: 'center', gap: 8,
+                  cursor: recurringBlocked ? 'not-allowed' : 'pointer',
+                  opacity: recurringBlocked ? 0.5 : 1,
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={modalForm.recurringEnabled && !recurringBlocked}
+                    onChange={e => setModalForm({ ...modalForm, recurringEnabled: e.target.checked })}
+                    disabled={modalSuccess || recurringBlocked}
+                  />
+                  จองซ้ำ (ทำซ้ำหลายครั้ง)
+                  {recurringBlocked && (
+                    <span style={{ fontSize: 11, color: '#888', fontWeight: 400 }}>
+                      — ห้อง Pro plan จองทีละครั้ง
+                    </span>
+                  )}
+                </label>
+                {modalForm.recurringEnabled && !recurringBlocked && (
+                  <>
+                    <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+                      <select
+                        style={{ ...s.input, flex: 1 }}
+                        value={modalForm.recurringFreq}
+                        onChange={e => setModalForm({ ...modalForm, recurringFreq: e.target.value })}
+                        disabled={modalSuccess}
+                      >
+                        <option value="weekly">ทุกสัปดาห์</option>
+                        <option value="daily">ทุกวัน</option>
+                      </select>
+                      <input
+                        type="number"
+                        min={2}
+                        max={isAdmin ? 26 : (modalForm.recurringFreq === 'daily' ? 30 : 5)}
+                        style={{ ...s.input, flex: 1 }}
+                        value={modalForm.recurringCount}
+                        onChange={e => setModalForm({ ...modalForm, recurringCount: e.target.value })}
+                        disabled={modalSuccess}
+                      />
+                      <span style={{ alignSelf: 'center', color: '#888', fontSize: 12 }}>ครั้ง</span>
+                    </div>
+                    {modalSeriesPreview && (
+                      <div style={{
+                        marginTop: 8, padding: '8px 12px', borderRadius: 8,
+                        background: modalSeriesPreview.over ? '#fff0f0' : '#F0FBF6',
+                        border: `1px solid ${modalSeriesPreview.over ? '#ffcccc' : '#B5E8D2'}`,
+                        color: modalSeriesPreview.over ? '#c62828' : '#03A96B',
+                        fontSize: 12, lineHeight: 1.5,
+                      }}>
+                        จะจอง <strong>{modalSeriesPreview.count} ครั้ง</strong> ตั้งแต่ {modalSeriesPreview.firstLabel}
+                        <br />ครั้งสุดท้าย: <strong>{modalSeriesPreview.lastLabel}</strong>
+                        {modalSeriesPreview.over && !isAdmin && (
+                          <><br />⚠ student จองล่วงหน้าได้ไม่เกิน 30 วัน — ลดจำนวนครั้ง</>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
 
               {modalDuration !== null && (
@@ -531,7 +729,11 @@ function Calendar() {
                   <span>{modalDuration} นาที</span>
                   {modalOverLimit && (
                     <span style={s.warnTag}>
-                      {modalDuration <= 0 ? 'เวลาไม่ถูกต้อง' : 'เกิน 40 นาที'}
+                      {modalDuration <= 0
+                        ? 'เวลาไม่ถูกต้อง'
+                        : maxDurationMin === 40
+                          ? 'เกิน 40 นาที (Free plan)'
+                          : `เกิน ${maxDurationMin} นาที`}
                     </span>
                   )}
                 </div>
@@ -567,11 +769,11 @@ function Calendar() {
               <button
                 style={{
                   ...s.confirmBtn,
-                  opacity: modalLoading || modalOverLimit || modalSuccess ? 0.6 : 1,
+                  opacity: modalLoading || modalOverLimit || modalSuccess || modalSeriesPreview?.over ? 0.6 : 1,
                 }}
                 className="ku-confirm-btn"
                 onClick={submitBooking}
-                disabled={modalLoading || modalOverLimit || modalSuccess}
+                disabled={modalLoading || modalOverLimit || modalSuccess || modalSeriesPreview?.over}
               >
                 {modalLoading ? (
                   <>
@@ -693,7 +895,29 @@ const s = {
   main: { flex: 1, padding: '32px 40px', overflowY: 'auto' },
   mainHeader: {
     display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-    marginBottom: 28, gap: 16,
+    marginBottom: 20, gap: 16, flexWrap: 'wrap',
+  },
+  roomSelectWrap: {
+    display: 'flex', flexDirection: 'column', gap: 6,
+    minWidth: 240,
+  },
+  roomSelectLabel: {
+    fontSize: 11, fontWeight: 600, color: '#888',
+    textTransform: 'uppercase', letterSpacing: 0.5,
+  },
+  roomSelect: {
+    padding: '10px 12px',
+    border: '1.5px solid #B5E8D2', borderRadius: 10,
+    background: 'white', color: '#1a1a1a',
+    fontSize: 13, fontWeight: 500,
+    cursor: 'pointer',
+  },
+  proWarnBanner: {
+    background: '#fef3c7', border: '1px solid #fde68a',
+    color: '#92400e',
+    padding: '10px 14px', borderRadius: 10,
+    fontSize: 12, lineHeight: 1.5,
+    marginBottom: 16,
   },
   mainTitle: {
     fontSize: 24, fontWeight: 700, color: '#014A32',
@@ -789,6 +1013,11 @@ const s = {
     fontSize: 13, fontWeight: 600, color: '#9f1239',
     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
     flexShrink: 0,
+  },
+  countBadge: {
+    marginLeft: 8, padding: '1px 8px', borderRadius: 10,
+    background: 'rgba(255,255,255,0.7)', fontSize: 10,
+    fontWeight: 600, color: '#475569',
   },
   bookedNameCompact: {
     fontSize: 11, fontWeight: 700, color: '#9f1239',

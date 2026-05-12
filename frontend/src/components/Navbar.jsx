@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { X, Menu } from 'lucide-react'
 import KUEmblem from './KUEmblem'
+import NotificationBell from './NotificationBell'
 import { useUser } from '../useUser'
 import { useIsMobile } from '../useIsMobile'
 
@@ -58,13 +59,16 @@ function Navbar() {
 
       {isMobile ? (
         <>
-          <button
-            onClick={() => setMenuOpen(o => !o)}
-            style={s.hamburger}
-            aria-label="menu"
-          >
-            <Menu size={22} />
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {user && <NotificationBell />}
+            <button
+              onClick={() => setMenuOpen(o => !o)}
+              style={s.hamburger}
+              aria-label="menu"
+            >
+              <Menu size={22} />
+            </button>
+          </div>
           {menuOpen && (
             <div style={s.mobileMenu} onClick={() => setMenuOpen(false)}>
               <div style={s.mobileMenuPanel} onClick={e => e.stopPropagation()}>
@@ -116,6 +120,7 @@ function Navbar() {
               {isActive(link.path) && <div style={s.activeDot} />}
             </span>
           ))}
+          {user && <NotificationBell />}
           <span style={s.navBtn} className="ku-nav-btn" onClick={() => setShowLogout(true)}>
             ออกจากระบบ
           </span>

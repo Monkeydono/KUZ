@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { AlertCircle, Check, Calendar, Clock, Users as UsersIcon } from 'lucide-react'
 import api from '../api'
@@ -32,29 +32,46 @@ function Book() {
     startTime: searchParams.get('startTime') || '',
     endTime: '',
     coHosts: '',
-    roomId: '',
+    capacity: '',
     notes: '',
     recurringEnabled: false,
     recurringFreq: 'weekly',
     recurringCount: 4,
   })
 
+  // group rooms ตาม capacity tier — Pro plan ในอนาคตจะมีหลายห้อง/tier → รวมเป็น 1 option
+  const tiers = useMemo(() => {
+    const map = new Map()
+    for (const r of rooms) {
+      if (r.is_priority_only && !canPickPriorityRoom) continue
+      const t = map.get(r.capacity) || {
+        capacity: r.capacity, total: 0, anyReady: false, anyZoomAccount: false,
+        isPriorityOnly: r.is_priority_only,
+      }
+      t.total += 1
+      if (!r.needs_zoom_pro) t.anyReady = true
+      if (r.has_zoom_account) t.anyZoomAccount = true
+      map.set(r.capacity, t)
+    }
+    return Array.from(map.values()).sort((a, b) => a.capacity - b.capacity)
+  }, [rooms, canPickPriorityRoom])
+
   useEffect(() => {
     api.get('/bookings/rooms')
-      .then(res => {
-        setRooms(res.data)
-        // เลือก default = ห้องแรกที่ available (ปกติคือ Room 100)
-        if (res.data.length > 0 && !form.roomId) {
-          const firstReady = res.data.find(r => !r.needs_zoom_pro) || res.data[0]
-          setForm(f => ({ ...f, roomId: firstReady.id }))
-        }
-      })
+      .then(res => setRooms(res.data || []))
       .catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const selectedRoom = rooms.find(r => r.id === form.roomId)
-  const roomMaxMin = selectedRoom?.has_zoom_account ? 24 * 60 : 40
+  // default-select tier แรกที่พร้อมใช้ (capacity น้อยสุด)
+  useEffect(() => {
+    if (!form.capacity && tiers.length > 0) {
+      const firstReady = tiers.find(t => t.anyReady)
+      if (firstReady) setForm(f => ({ ...f, capacity: firstReady.capacity }))
+    }
+  }, [tiers, form.capacity])
+
+  const selectedTier = tiers.find(t => t.capacity === Number(form.capacity)) || null
+  const roomMaxMin = selectedTier?.anyZoomAccount ? 24 * 60 : 40
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
@@ -106,9 +123,9 @@ function Book() {
       return
     }
 
-    // ห้องต้อง approve → ต้องระบุเหตุผล (ช่วย staff ตัดสินใจ)
-    if (selectedRoom && selectedRoom.capacity >= 300 && !isAdmin && !form.notes.trim()) {
-      setError('กรุณาระบุเหตุผลการจอง — ห้อง ' + selectedRoom.capacity + ' คนต้องรออนุมัติ')
+    // ห้อง Pro plan (capacity > 100) ต้อง approve → ต้องระบุเหตุผล (ช่วย staff ตัดสินใจ)
+    if (selectedTier && selectedTier.capacity > 100 && !isAdmin && !form.notes.trim()) {
+      setError('กรุณาระบุเหตุผลการจอง — ห้อง ' + selectedTier.capacity + ' คนต้องรออนุมัติ')
       return
     }
 
@@ -118,7 +135,7 @@ function Book() {
       .split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
 
     const payload = { title: form.title, startTime, endTime, coHostEmails }
-    if (form.roomId) payload.roomId = form.roomId
+    if (form.capacity) payload.capacity = Number(form.capacity)
     if (form.notes.trim()) payload.notes = form.notes.trim()
     if (form.recurringEnabled && form.recurringCount > 1) {
       payload.recurring = { freq: form.recurringFreq, count: parseInt(form.recurringCount, 10) }
@@ -132,7 +149,7 @@ function Book() {
       setSuccess(true)
       setForm({
         title: '', date: '', startTime: '', endTime: '', coHosts: '',
-        roomId: form.roomId,  // คงค่าห้องเดิม
+        capacity: form.capacity,  // คงค่า tier เดิม
         notes: '',
         recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
       })
@@ -230,57 +247,57 @@ function Book() {
               )}
             </div>
 
-            {rooms.length >= 1 && (
+            {tiers.length >= 1 && (
               <div style={s.field}>
                 <label style={s.label}>
                   ขนาดห้องประชุม <span style={s.req}>*</span>
                 </label>
                 <select
                   style={s.input}
-                  value={form.roomId}
-                  onChange={e => setForm({ ...form, roomId: e.target.value })}
+                  value={form.capacity}
+                  onChange={e => setForm({ ...form, capacity: parseInt(e.target.value, 10) })}
                 >
-                  {rooms.map(r => {
-                    const blockedPriority = r.is_priority_only && !canPickPriorityRoom
-                    const blockedNeedsPro = r.needs_zoom_pro
-                    const suffix = blockedNeedsPro ? ' · ยังไม่พร้อมใช้ (รอ Zoom Pro)'
-                                 : r.is_priority_only ? ' · Priority' : ''
+                  {tiers.map(t => {
+                    const suffix = !t.anyReady ? ' · ยังไม่พร้อม'
+                                 : t.isPriorityOnly ? ' · Priority'
+                                 : (t.total > 1 ? ` · ${t.total} ห้อง` : '')
                     return (
                       <option
-                        key={r.id}
-                        value={r.id}
-                        disabled={blockedPriority || blockedNeedsPro}
+                        key={t.capacity}
+                        value={t.capacity}
+                        disabled={!t.anyReady}
                       >
-                        {r.name} · {r.capacity} คน{suffix}
+                        {t.capacity} คน{suffix}
                       </option>
                     )
                   })}
                 </select>
-                {selectedRoom && (
+                {selectedTier && (
                   <div style={{
                     marginTop: 8, padding: '8px 12px', borderRadius: 8,
-                    background: selectedRoom.needs_zoom_pro ? '#fff0f0' : '#F0FBF6',
-                    border: `1px solid ${selectedRoom.needs_zoom_pro ? '#ffcccc' : '#B5E8D2'}`,
-                    color: selectedRoom.needs_zoom_pro ? '#c62828' : '#03A96B',
+                    background: !selectedTier.anyReady ? '#fff0f0' : '#F0FBF6',
+                    border: `1px solid ${!selectedTier.anyReady ? '#ffcccc' : '#B5E8D2'}`,
+                    color: !selectedTier.anyReady ? '#c62828' : '#03A96B',
                     fontSize: 12,
                     display: 'inline-flex', alignItems: 'center', gap: 6,
                   }}>
                     <UsersIcon size={14} />
-                    รองรับ {selectedRoom.capacity} คน
-                    {selectedRoom.needs_zoom_pro
+                    รองรับ {selectedTier.capacity} คน
+                    {!selectedTier.anyReady
                       ? ' · admin ยังไม่ได้ตั้งค่า Zoom Pro — เลือกห้องอื่น'
-                      : selectedRoom.has_zoom_account
+                      : selectedTier.anyZoomAccount
                         ? ' · Pro plan (ไม่จำกัด 40 นาที)'
                         : ' · Free plan (จำกัด 40 นาที)'}
+                    {selectedTier.total > 1 && ` · ${selectedTier.total} ห้องใน tier นี้`}
                   </div>
                 )}
-                {selectedRoom && selectedRoom.capacity >= 300 && !isAdmin && (
+                {selectedTier && selectedTier.capacity > 100 && !isAdmin && (
                   <div style={{
                     marginTop: 8, padding: '10px 12px', borderRadius: 8,
                     background: '#fef3c7', border: '1px solid #fde68a',
                     color: '#92400e', fontSize: 12, lineHeight: 1.5,
                   }}>
-                    ⚠ ห้อง {selectedRoom.capacity} คน <strong>ต้องรออนุมัติ</strong>จาก staff/admin
+                    ⚠ ห้อง {selectedTier.capacity} คน (Pro plan) <strong>ต้องรออนุมัติ</strong>จาก staff/admin
                     ก่อนจึงจะได้รับลิงก์ Zoom — ระบบจะแจ้งทางอีเมลเมื่อ approve แล้ว
                   </div>
                 )}
@@ -397,7 +414,7 @@ function Book() {
             <div style={s.field}>
               <label style={s.label}>
                 หมายเหตุ / เหตุผลการจอง
-                {selectedRoom && selectedRoom.capacity >= 300 && !isAdmin
+                {selectedTier && selectedTier.capacity > 100 && !isAdmin
                   ? <span style={s.req}> *</span>
                   : <span style={s.optional}> — ไม่บังคับ</span>}
               </label>

@@ -41,7 +41,7 @@ async function getZoomToken(creds = null) {
   return response.data.access_token;
 }
 
-async function createMeeting({ title, startTime, durationMinutes, creds = null }) {
+async function createMeeting({ title, startTime, durationMinutes, creds = null, coHostEmails = [] }) {
   const token = await getZoomToken(creds);
 
   const settings = {
@@ -49,35 +49,65 @@ async function createMeeting({ title, startTime, durationMinutes, creds = null }
     waiting_room:     true,
   };
 
-  try {
-    const response = await axios.post(
-      'https://api.zoom.us/v2/users/me/meetings',
-      {
-        topic:      title,
-        type:       2,
-        start_time: startTime,
-        duration:   durationMinutes,
-        timezone:   'Asia/Bangkok',
-        settings,
-      },
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+  // alternative_hosts = co-host ที่ Zoom จะมอบสิทธิ์ host ให้ (ต้องเป็น licensed user ใน Zoom org)
+  // ถ้าไม่ใช่ licensed ใน org → Zoom จะ reject — เราจะ retry โดยไม่ใส่ alternative_hosts
+  // (co-host invite tracking ฝั่ง app ทำผ่าน co_host_emails + email invite อยู่แล้ว)
+  if (coHostEmails && coHostEmails.length > 0) {
+    settings.alternative_hosts = coHostEmails.join(',');
+    settings.alternative_hosts_email_notification = false; // เราส่ง email เองผ่าน n8n
+  }
 
-    return {
-      meetingId:  response.data.id,
-      joinUrl:    response.data.join_url,
-      password:   response.data.password,
-    };
+  const body = {
+    topic:      title,
+    type:       2,
+    start_time: startTime,
+    duration:   durationMinutes,
+    timezone:   'Asia/Bangkok',
+    settings,
+  };
+
+  const tryCreate = async (payload) => axios.post(
+    'https://api.zoom.us/v2/users/me/meetings',
+    payload,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  let response;
+  try {
+    response = await tryCreate(body);
   } catch (err) {
     const data = err.response?.data;
-    console.error('[Zoom create meeting failed]', err.response?.status, data);
-    const msg = data?.message || err.message;
-    const e = new Error(msg);
-    e.zoomCode = data?.code;
-    e.zoomStatus = err.response?.status;
-    e.zoomMessage = msg;
-    throw e;
+    // Zoom error 1115 / 3001 = alternative host email invalid → retry without alternative_hosts
+    if (settings.alternative_hosts && (data?.code === 1115 || data?.code === 3001 || err.response?.status === 400)) {
+      console.warn('[Zoom] alternative_hosts rejected — retry without:', data?.message);
+      delete settings.alternative_hosts;
+      delete settings.alternative_hosts_email_notification;
+      try {
+        response = await tryCreate(body);
+      } catch (err2) {
+        const data2 = err2.response?.data;
+        console.error('[Zoom create meeting failed]', err2.response?.status, data2);
+        const msg = data2?.message || err2.message;
+        const e = new Error(msg);
+        e.zoomCode = data2?.code;
+        e.zoomStatus = err2.response?.status;
+        throw e;
+      }
+    } else {
+      console.error('[Zoom create meeting failed]', err.response?.status, data);
+      const msg = data?.message || err.message;
+      const e = new Error(msg);
+      e.zoomCode = data?.code;
+      e.zoomStatus = err.response?.status;
+      throw e;
+    }
   }
+
+  return {
+    meetingId:  response.data.id,
+    joinUrl:    response.data.join_url,
+    password:   response.data.password,
+  };
 }
 
 async function deleteMeeting(meetingId, creds = null) {
@@ -89,4 +119,15 @@ async function deleteMeeting(meetingId, creds = null) {
   );
 }
 
-module.exports = { createMeeting, deleteMeeting };
+// หา zoom_account ของ meeting จาก database (สำหรับ webhook ที่ส่ง meeting_id มา)
+// webhook signature verification — ใช้ HMAC SHA256 ของ payload + Zoom verification token
+function verifyWebhookSignature(body, headers, secretToken) {
+  if (!secretToken) return false;
+  const crypto = require('crypto');
+  const message = `v0:${headers['x-zm-request-timestamp']}:${typeof body === 'string' ? body : JSON.stringify(body)}`;
+  const hash = crypto.createHmac('sha256', secretToken).update(message).digest('hex');
+  const signature = `v0=${hash}`;
+  return signature === headers['x-zm-signature'];
+}
+
+module.exports = { createMeeting, deleteMeeting, verifyWebhookSignature };

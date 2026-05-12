@@ -1,6 +1,7 @@
 const pool = require('../../config/db');
 const zoomService = require('./zoomService');
 const notificationService = require('./notificationService');
+const inAppNotif = require('./inAppNotificationService');
 const quotaService = require('./quotaService');
 const auditService = require('./auditService');
 const googleCalendarService = require('./googleCalendarService');
@@ -10,11 +11,22 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ALLOWED_DOMAINS = ['@ku.th', '@ku.ac.th'];
 const BKK_TZ = 'Asia/Bangkok';
 
-// ห้อง capacity >= 300 ต้องผ่าน approval จาก staff/admin ก่อน — ป้องกัน priority abuse
-const APPROVAL_CAPACITY_THRESHOLD = 300;
+// ห้อง Zoom Pro plan (capacity > 100) ต้องผ่าน approval จาก staff/admin ก่อน
+// Free plan รองรับสูงสุด 100 → ห้อง 300/1000 = Pro → ต้องอนุมัติเพื่อกัน abuse + จัด account
+function requiresApproval(room) {
+  return room.capacity > 100;
+}
 
 // priority user bypass quota รายเดือน แต่ยังจำกัด 40 ชม./สัปดาห์ — ป้องกัน abuse
 const PRIORITY_WEEKLY_HOURS_CAP = 40;
+
+// query email + name ของ staff + admin ทุกคน เพื่อให้ n8n loop ส่ง email
+async function getApproverContacts() {
+  const r = await pool.query(
+    `SELECT email, name FROM users WHERE role IN ('staff', 'admin') AND email IS NOT NULL`
+  );
+  return r.rows;
+}
 
 // คำนวณชั่วโมงที่ priority user จองแล้วในสัปดาห์นี้ (Mon-Sun ตาม Bangkok TZ)
 async function getPriorityWeeklyHours(userId, excludeBookingId = null) {
@@ -152,7 +164,7 @@ function maxDurationMinutes(room) {
   return room.creds ? 24 * 60 : 40;
 }
 
-async function createBooking({ userId, userEmail, userRole, title, startTime, endTime, coHostEmails, roomId, notes }) {
+async function createBooking({ userId, userEmail, userRole, title, startTime, endTime, coHostEmails, roomId, capacity, notes }) {
   const isAdmin    = userRole === 'admin';
   const isPriority = userRole === 'priority';
   const bypassQuota = isAdmin || isPriority;
@@ -191,123 +203,194 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
 
   validateBookingHours(start, end);
 
-  const room = await resolveRoom(roomId, userRole);
+  const useTier = capacity && !roomId;
   const duration = (end - start) / 60000;
-  const maxMin = maxDurationMinutes(room);
-  if (duration > maxMin) {
-    throw {
-      status: 400,
-      message: maxMin === 40
-        ? 'ไม่สามารถจองเกิน 40 นาทีได้ (Zoom free plan)'
-        : `ไม่สามารถจองเกิน ${maxMin} นาทีได้`,
-    };
-  }
 
-  if (await checkConflict(startTime, endTime, room.id)) {
-    throw { status: 409, message: 'ช่วงเวลานี้ถูกจองห้องนี้แล้ว กรุณาเลือกเวลาอื่นหรือห้องอื่น' };
-  }
-
-  // priority weekly soft quota — กัน abuse แม้ bypass quota รายเดือน
-  if (isPriority && !isAdmin) {
-    const usedHours = await getPriorityWeeklyHours(userId);
-    const newHours = duration / 60;
-    if (usedHours + newHours > PRIORITY_WEEKLY_HOURS_CAP) {
+  // helper: ใช้ใน retry loop — ลอง book ด้วยห้องที่ระบุ ถ้าชน → throw 409/23P01 ให้ caller retry
+  const tryWithRoom = async (room) => {
+    const maxMin = maxDurationMinutes(room);
+    if (duration > maxMin) {
       throw {
-        status: 429,
-        message: `เกินโควตา ${PRIORITY_WEEKLY_HOURS_CAP} ชม./สัปดาห์ของ priority (ใช้ไปแล้ว ${usedHours.toFixed(1)} ชม.)`,
+        status: 400,
+        message: maxMin === 40
+          ? 'ไม่สามารถจองเกิน 40 นาทีได้ (Zoom free plan)'
+          : `ไม่สามารถจองเกิน ${maxMin} นาทีได้`,
       };
     }
-  }
 
-  if (!bypassQuota) {
-    const hasQuota = await quotaService.checkAndUseQuota(userId, start);
-    if (!hasQuota) {
-      throw { status: 429, message: 'คุณใช้ quota ครบแล้วในเดือนนี้' };
+    if (await checkConflict(startTime, endTime, room.id)) {
+      throw { status: 409, message: 'ช่วงเวลานี้ถูกจองห้องนี้แล้ว กรุณาเลือกเวลาอื่นหรือห้องอื่น' };
     }
-  }
 
-  // ห้อง capacity >= threshold ต้องรออนุมัติจาก staff/admin (ยกเว้น admin เอง)
-  const requiresApproval = room.capacity >= APPROVAL_CAPACITY_THRESHOLD && !isAdmin;
-
-  if (requiresApproval) {
-    // ไม่สร้าง Zoom meeting จนกว่าจะ approve (ประหยัด API call + กัน orphan meeting)
-    const r = await pool.query(
-      `INSERT INTO bookings
-         (user_id, title, start_time, end_time, co_host_emails, room_id, notes, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_approval')
-       RETURNING *,
-         (SELECT email FROM users WHERE id = $1) AS user_email,
-         (SELECT name  FROM users WHERE id = $1) AS user_name`,
-      [userId, title, startTime, endTime, coHosts, room.id, noteText]
-    );
-    const booking = r.rows[0];
-    await auditService.log({
-      userId, bookingId: booking.id, action: 'booking_pending_approval',
-      detail: { title, room_id: room.id, room_name: room.name, capacity: room.capacity },
-    });
-    return booking;
-  }
-
-  let meeting;
-  try {
-    meeting = await zoomService.createMeeting({
-      title,
-      startTime,
-      durationMinutes: Math.ceil(duration),
-      creds: room.creds,
-    });
-  } catch (err) {
-    if (!bypassQuota) await quotaService.returnQuota(userId, start);
-    throw { status: 502, message: 'ไม่สามารถสร้างห้อง Zoom ได้ กรุณาลองใหม่' };
-  }
-
-  let result;
-  try {
-    result = await pool.query(
-      `INSERT INTO bookings
-         (user_id, title, start_time, end_time, zoom_meeting_id, zoom_join_url, zoom_password, co_host_emails, room_id, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING *,
-         (SELECT email FROM users WHERE id = $1) as user_email,
-         (SELECT name FROM users WHERE id = $1) as user_name`,
-      [userId, title, startTime, endTime,
-       meeting.meetingId, meeting.joinUrl, meeting.password, coHosts, room.id, noteText]
-    );
-  } catch (err) {
-    if (err.code === '23P01') {
-      if (!bypassQuota) await quotaService.returnQuota(userId, start);
-      try { await zoomService.deleteMeeting(meeting.meetingId, room.creds); }
-      catch (e) { console.error('rollback zoom delete failed:', e.message); }
-      throw { status: 409, message: 'ช่วงเวลานี้ถูกจองห้องนี้แล้ว กรุณาเลือกเวลาอื่น' };
+    if (isPriority && !isAdmin) {
+      const usedHours = await getPriorityWeeklyHours(userId);
+      const newHours = duration / 60;
+      if (usedHours + newHours > PRIORITY_WEEKLY_HOURS_CAP) {
+        throw {
+          status: 429,
+          message: `เกินโควตา ${PRIORITY_WEEKLY_HOURS_CAP} ชม./สัปดาห์ของ priority (ใช้ไปแล้ว ${usedHours.toFixed(1)} ชม.)`,
+        };
+      }
     }
-    throw err;
-  }
 
-  const booking = result.rows[0];
+    if (!bypassQuota) {
+      const hasQuota = await quotaService.checkAndUseQuota(userId, start);
+      if (!hasQuota) {
+        throw { status: 429, message: 'คุณใช้ quota ครบแล้วในเดือนนี้' };
+      }
+    }
 
-  await auditService.log({
-    userId: userId, bookingId: booking.id, action: 'booking_created',
-    detail: { title, start_time: startTime, end_time: endTime, co_host_count: coHosts.length, room_id: room.id, room_name: room.name },
-  });
+    const needsApproval = requiresApproval(room) && !isAdmin;
+    if (needsApproval) {
+      let pendingResult;
+      try {
+        pendingResult = await pool.query(
+          `INSERT INTO bookings
+             (user_id, title, start_time, end_time, co_host_emails, room_id, notes, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_approval')
+           RETURNING *,
+             (SELECT email FROM users WHERE id = $1) AS user_email,
+             (SELECT name  FROM users WHERE id = $1) AS user_name`,
+          [userId, title, startTime, endTime, coHosts, room.id, noteText]
+        );
+      } catch (err) {
+        if (err.code === '23P01') {
+          if (!bypassQuota) await quotaService.returnQuota(userId, start);
+          throw { code: '23P01', status: 409, message: 'ห้องถูกจองช่วงนี้แล้ว' };
+        }
+        throw err;
+      }
+      const booking = pendingResult.rows[0];
+      booking.room_name = room.name;
+      booking.room_capacity = room.capacity;
 
-  await notificationService.sendBookingConfirmation(booking);
+      await auditService.log({
+        userId, bookingId: booking.id, action: 'booking_pending_approval',
+        detail: { title, room_id: room.id, room_name: room.name, capacity: room.capacity },
+      });
 
-  for (const email of coHosts) {
+      try {
+        const approvers = await getApproverContacts();
+        await notificationService.sendPendingApprovalRequest(booking, approvers);
+      } catch (e) {
+        console.error('pending approval webhook failed:', e.message);
+      }
+      try {
+        const approverIds = await inAppNotif.getApproverIds();
+        await inAppNotif.createBulk({
+          userIds: approverIds,
+          type:    'booking_pending_approval',
+          title:   `คำขอจองห้องใหม่: ${booking.user_name}`,
+          message: `${booking.title} · ห้อง ${room.name} (${room.capacity} คน)`,
+          bookingId: booking.id,
+          link:    `/admin?tab=pending&bookingId=${booking.id}`,
+        });
+      } catch (e) {
+        console.error('in-app pending notif failed:', e.message);
+      }
+      return booking;
+    }
+
+    let meeting;
     try {
-      await notificationService.sendCoHostInvitation(booking, email);
+      meeting = await zoomService.createMeeting({
+        title, startTime,
+        durationMinutes: Math.ceil(duration),
+        creds: room.creds,
+        coHostEmails: coHosts,
+      });
     } catch (err) {
-      console.error('co-host invite failed for', email, err.message);
+      if (!bypassQuota) await quotaService.returnQuota(userId, start);
+      throw { status: 502, message: 'ไม่สามารถสร้างห้อง Zoom ได้ กรุณาลองใหม่' };
     }
+
+    let result;
+    try {
+      result = await pool.query(
+        `INSERT INTO bookings
+           (user_id, title, start_time, end_time, zoom_meeting_id, zoom_join_url, zoom_password, co_host_emails, room_id, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING *,
+           (SELECT email FROM users WHERE id = $1) as user_email,
+           (SELECT name FROM users WHERE id = $1) as user_name`,
+        [userId, title, startTime, endTime,
+         meeting.meetingId, meeting.joinUrl, meeting.password, coHosts, room.id, noteText]
+      );
+    } catch (err) {
+      if (err.code === '23P01') {
+        if (!bypassQuota) await quotaService.returnQuota(userId, start);
+        try { await zoomService.deleteMeeting(meeting.meetingId, room.creds); }
+        catch (e) { console.error('rollback zoom delete failed:', e.message); }
+        throw { code: '23P01', status: 409, message: 'ช่วงเวลานี้ถูกจองห้องนี้แล้ว กรุณาเลือกเวลาอื่น' };
+      }
+      throw err;
+    }
+
+    const booking = result.rows[0];
+
+    await auditService.log({
+      userId, bookingId: booking.id, action: 'booking_created',
+      detail: { title, start_time: startTime, end_time: endTime, co_host_count: coHosts.length, room_id: room.id, room_name: room.name },
+    });
+
+    await notificationService.sendBookingConfirmation(booking);
+    for (const email of coHosts) {
+      try { await notificationService.sendCoHostInvitation(booking, email); }
+      catch (err) { console.error('co-host invite failed for', email, err.message); }
+    }
+    googleCalendarService.syncToAttendees(booking, [booking.user_email, ...coHosts])
+      .catch(err => console.error('gcal sync failed:', err.message));
+
+    return booking;
+  };
+
+  // ─── room resolution + retry loop ───
+  // Free plan (1 ห้อง/tier): retry แค่ครั้งเดียว → error เหมือนเดิม
+  // Pro plan (หลายห้อง/tier): ถ้า race กับ user อื่น → ลองหาห้องอื่นใน tier
+  if (useTier) {
+    const cap = parseInt(capacity, 10);
+    const MAX_ATTEMPTS = 5;
+    const tried = new Set();
+    let lastErr = null;
+
+    for (let i = 0; i < MAX_ATTEMPTS; i++) {
+      const room = await roomService.findAvailableRoomByCapacity(cap, startTime, endTime, userRole, tried);
+      if (!room) {
+        const allIds = await roomService.getRoomIdsByCapacity(cap, userRole);
+        if (allIds.length === 0) {
+          throw { status: 404, message: `ไม่มีห้องขนาด ${cap} คนพร้อมใช้งานในระบบ` };
+        }
+        // ทุกห้องใน tier เต็ม → แนะนำ tier ใหญ่ขึ้น (cross-tier suggestion)
+        const suggested = await roomService.suggestAvailableLargerTier(cap, startTime, endTime, userRole);
+        const baseMsg = `ห้องขนาด ${cap} คนเต็มทุกห้องในช่วงเวลานี้ (${allIds.length} ห้อง)`;
+        throw {
+          status: 409,
+          message: suggested
+            ? `${baseMsg} — ลองเลือกห้อง ${suggested} คนที่ยังว่างอยู่`
+            : `${baseMsg} — เลือกเวลาอื่น`,
+        };
+      }
+      tried.add(room.id);
+      try {
+        return await tryWithRoom(room);
+      } catch (err) {
+        // race condition: ห้องที่เลือกชนกับคนอื่น → retry หาห้องอื่น
+        if ((err.code === '23P01' || err.status === 409) && i < MAX_ATTEMPTS - 1) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr || { status: 409, message: `จองไม่สำเร็จหลังลอง ${MAX_ATTEMPTS} ครั้ง` };
   }
 
-  googleCalendarService.syncToAttendees(booking, [booking.user_email, ...coHosts])
-    .catch(err => console.error('gcal sync failed:', err.message));
-
-  return booking;
+  const room = await resolveRoom(roomId, userRole);
+  return await tryWithRoom(room);
 }
 
 async function createRecurringBooking({
-  userId, userEmail, userRole, title, startTime, endTime, coHostEmails, recurring, roomId, notes,
+  userId, userEmail, userRole, title, startTime, endTime, coHostEmails, recurring, roomId, capacity, notes,
 }) {
   const noteText = notes && typeof notes === 'string' ? notes.trim().slice(0, 1000) : null;
   const isAdmin    = userRole === 'admin';
@@ -334,24 +417,16 @@ async function createRecurringBooking({
 
   validateBookingHours(baseStart, baseEnd);
 
-  const room = await resolveRoom(roomId, userRole);
-  // ห้อง capacity >= threshold ต้องรออนุมัติ — ไม่อนุญาตจองแบบ series (กัน admin โดน flood)
-  if (room.capacity >= APPROVAL_CAPACITY_THRESHOLD && !isAdmin) {
+  // capacity-based pre-check: ห้อง Pro plan ไม่รองรับ recurring (กัน flood approval queue)
+  const capNum = capacity ? parseInt(capacity, 10) : null;
+  if (capNum && capNum > 100 && !isAdmin) {
     throw {
       status: 400,
-      message: `ห้อง ${room.capacity} คนต้องรออนุมัติ — กรุณาจองทีละครั้ง (ไม่รองรับ recurring)`,
-    };
-  }
-  const maxMin = maxDurationMinutes(room);
-  if ((baseEnd - baseStart) / 60000 > maxMin) {
-    throw {
-      status: 400,
-      message: maxMin === 40
-        ? 'ไม่สามารถจองเกิน 40 นาทีได้'
-        : `ไม่สามารถจองเกิน ${maxMin} นาทีได้`,
+      message: `ห้อง ${capNum} คนต้องรออนุมัติ — กรุณาจองทีละครั้ง (ไม่รองรับ recurring)`,
     };
   }
 
+  // compute occurrences ก่อน เพื่อหาห้องที่ว่างครบทุก occurrence
   const occurrences = [];
   for (let i = 0; i < count; i++) {
     occurrences.push({
@@ -367,6 +442,45 @@ async function createRecurringBooking({
     }
   }
 
+  // capacity-based: สแกนทุกห้องใน tier หา room ที่ว่างครบทุก occurrence
+  // Free plan (1 ห้อง/tier): ถ้าห้องนั้นชนใน occurrence ไหน → null → error เหมือนเดิม
+  // Pro plan (หลายห้อง/tier): สลับเอาห้องอื่นที่ว่างครบทุก occurrence
+  let room;
+  if (capNum && !roomId) {
+    room = await roomService.findAvailableRoomForAllOccurrences(capNum, occurrences, userRole);
+    if (!room) {
+      const allIds = await roomService.getRoomIdsByCapacity(capNum, userRole);
+      if (allIds.length === 0) {
+        throw { status: 404, message: `ไม่มีห้องขนาด ${capNum} คนพร้อมใช้งาน` };
+      }
+      throw {
+        status: 409,
+        message: `ไม่มีห้องขนาด ${capNum} คนที่ว่างครบทุกครั้งใน series (มี ${allIds.length} ห้อง) — ลดจำนวนครั้งหรือเลือกเวลาอื่น`,
+      };
+    }
+  } else {
+    room = await resolveRoom(roomId, userRole);
+  }
+
+  // re-check requiresApproval หลัง resolve (กันกรณี roomId ผ่าน path ที่ไม่ผ่าน capacity check)
+  if (requiresApproval(room) && !isAdmin) {
+    throw {
+      status: 400,
+      message: `ห้อง ${room.capacity} คนต้องรออนุมัติ — กรุณาจองทีละครั้ง (ไม่รองรับ recurring)`,
+    };
+  }
+
+  const maxMin = maxDurationMinutes(room);
+  if ((baseEnd - baseStart) / 60000 > maxMin) {
+    throw {
+      status: 400,
+      message: maxMin === 40
+        ? 'ไม่สามารถจองเกิน 40 นาทีได้'
+        : `ไม่สามารถจองเกิน ${maxMin} นาทีได้`,
+    };
+  }
+
+  // re-verify conflict (สำหรับ roomId-based path — capacity-based ถูก scan ไปแล้ว แต่เช็คซ้ำเผื่อ race)
   for (const o of occurrences) {
     if (await checkConflict(o.startTime, o.endTime, room.id)) {
       throw { status: 409, message: `ช่วง ${new Date(o.startTime).toLocaleString('th-TH')} ชนกับ booking อื่นในห้องนี้` };
@@ -406,6 +520,7 @@ async function createRecurringBooking({
         startTime: o.startTime,
         durationMinutes: Math.ceil((new Date(o.endTime) - new Date(o.startTime)) / 60000),
         creds: room.creds,
+        coHostEmails: coHosts,
       });
       meetings.push(m);
     }
@@ -477,11 +592,14 @@ async function createRecurringBooking({
   return inserted;
 }
 
-async function cancelBooking(bookingId, userId, userRole, scope = 'this') {
+async function cancelBooking(bookingId, userId, userRole, scope = 'this', reason = null) {
   const isAdmin = userRole === 'admin';
+  const isStaff = userRole === 'staff';
+  // staff+admin มีสิทธิ์ cancel ของคนอื่น (กรณีไม่เหมาะสม)
+  const canCancelOthers = isAdmin || isStaff;
 
-  const ownerClause = isAdmin ? '' : 'AND b.user_id = $2';
-  const params = isAdmin ? [bookingId] : [bookingId, userId];
+  const ownerClause = canCancelOthers ? '' : 'AND b.user_id = $2';
+  const params = canCancelOthers ? [bookingId] : [bookingId, userId];
   const targetResult = await pool.query(
     `SELECT b.*, u.role as owner_role,
             za.account_id AS zoom_account_id_str,
@@ -498,6 +616,18 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this') {
     throw { status: 404, message: 'ไม่พบการจองนี้' };
   }
   const target = targetResult.rows[0];
+
+  // staff/admin ยกเลิกของคนอื่น → บังคับใส่เหตุผล
+  const isCancellingOther = canCancelOthers && target.user_id !== userId;
+  if (isCancellingOther) {
+    const trimmed = (reason || '').trim();
+    if (!trimmed) {
+      throw { status: 400, message: 'กรุณาระบุเหตุผลในการยกเลิกการจองของผู้อื่น' };
+    }
+    reason = trimmed.slice(0, 500);
+  } else {
+    reason = null;
+  }
 
   let toCancel;
   if (scope === 'this' || !target.series_id) {
@@ -543,15 +673,19 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this') {
 
   for (const b of toCancel) {
     const hasStarted = new Date(b.start_time) <= now;
+    // เฉพาะ admin เท่านั้นที่ยกเลิกได้หลังเริ่ม — staff/user ห้าม
     if (hasStarted && !isAdmin) {
       skipped.push(b.id);
       continue;
     }
 
     const updRes = await pool.query(
-      `UPDATE bookings SET status = 'cancelled'
+      `UPDATE bookings
+          SET status = 'cancelled',
+              cancelled_reason = $2,
+              cancelled_by     = $3
         WHERE id = $1 AND status = 'confirmed' RETURNING id`,
-      [b.id]
+      [b.id, isCancellingOther ? reason : null, isCancellingOther ? userId : null]
     );
     if (updRes.rowCount === 0) continue;
 
@@ -582,13 +716,30 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this') {
         ...b,
         user_email: owner.email,
         user_name:  owner.name,
+        rejection_reason: isCancellingOther ? reason : null,
       });
     } catch (e) { console.error(e.message); }
 
+    // in-app notif — เฉพาะตอน staff/admin ยกเลิกของคนอื่น (user ยกเลิกเองไม่ต้องแจ้งตัวเอง)
+    if (isCancellingOther) {
+      try {
+        await inAppNotif.create({
+          userId:  b.user_id,
+          type:    'booking_cancelled_by_admin',
+          title:   `การจองถูกยกเลิกโดย ${userRole}`,
+          message: reason ? `${b.title} · เหตุผล: ${reason}` : b.title,
+          bookingId: b.id,
+          link:    `/my-bookings?bookingId=${b.id}`,
+        });
+      } catch (e) {
+        console.error('in-app cancelled notif failed:', e.message);
+      }
+    }
+
     await auditService.log({
       userId, bookingId: b.id,
-      action: isAdmin && b.user_id !== userId ? 'admin_cancelled' : 'booking_cancelled',
-      detail: { scope, was_started: hasStarted, owner_id: b.user_id },
+      action: isCancellingOther ? `${userRole}_cancelled` : 'booking_cancelled',
+      detail: { scope, was_started: hasStarted, owner_id: b.user_id, reason: reason || null },
     });
 
     cancelled.push(b.id);
@@ -675,7 +826,7 @@ async function getJoinInfo(bookingId, requester) {
 // approve booking ที่ pending_approval → สร้าง Zoom meeting ตอนนี้ + status=confirmed
 async function approveBooking(bookingId, approverId) {
   const r = await pool.query(
-    `SELECT b.*, r.capacity AS room_capacity,
+    `SELECT b.*, r.capacity AS room_capacity, r.name AS room_name,
             za.account_id   AS zoom_account_id_str,
             za.client_id    AS zoom_client_id,
             za.client_secret AS zoom_client_secret
@@ -705,6 +856,7 @@ async function approveBooking(bookingId, approverId) {
       startTime:       booking.start_time.toISOString(),
       durationMinutes: Math.ceil(duration),
       creds,
+      coHostEmails:    booking.co_host_emails || [],
     });
   } catch (err) {
     throw { status: 502, message: 'ไม่สามารถสร้างห้อง Zoom ได้ตอน approve — ลองใหม่' };
@@ -736,12 +888,27 @@ async function approveBooking(bookingId, approverId) {
     detail: { owner_id: approved.user_id, capacity: booking.room_capacity },
   });
 
-  try { await notificationService.sendBookingConfirmation(approved); } catch (e) { console.error(e.message); }
+  approved.room_name = booking.room_name;
+  try { await notificationService.sendApprovalDecision(approved, 'approved'); } catch (e) { console.error(e.message); }
   for (const email of (approved.co_host_emails || [])) {
     try { await notificationService.sendCoHostInvitation(approved, email); } catch (e) { console.error(e.message); }
   }
   googleCalendarService.syncToAttendees(approved, [approved.user_email, ...(approved.co_host_emails || [])])
     .catch(err => console.error('gcal sync failed:', err.message));
+
+  // in-app notification ให้ user เจ้าของ booking
+  try {
+    await inAppNotif.create({
+      userId:  approved.user_id,
+      type:    'booking_approved',
+      title:   'คำขอจองห้องได้รับการอนุมัติ',
+      message: `${approved.title} · พร้อมใช้งานแล้ว`,
+      bookingId: approved.id,
+      link:    `/my-bookings?bookingId=${approved.id}`,
+    });
+  } catch (e) {
+    console.error('in-app approved notif failed:', e.message);
+  }
 
   return approved;
 }
@@ -757,7 +924,8 @@ async function rejectBooking(bookingId, approverId, reason) {
       WHERE id = $1 AND status = 'pending_approval'
       RETURNING *,
         (SELECT email FROM users WHERE id = user_id) AS user_email,
-        (SELECT name  FROM users WHERE id = user_id) AS user_name`,
+        (SELECT name  FROM users WHERE id = user_id) AS user_name,
+        (SELECT name  FROM rooms WHERE id = room_id) AS room_name`,
     [bookingId, approverId, reason || null]
   );
   if (upd.rowCount === 0) {
@@ -771,13 +939,235 @@ async function rejectBooking(bookingId, approverId, reason) {
   });
 
   try {
-    await notificationService.sendCancellationNotification({
-      ...rejected,
-      rejection_reason: reason,
-    });
+    await notificationService.sendApprovalDecision(rejected, 'rejected', reason);
   } catch (e) { console.error(e.message); }
 
+  // in-app notification ให้ user
+  try {
+    await inAppNotif.create({
+      userId:  rejected.user_id,
+      type:    'booking_rejected',
+      title:   'คำขอจองห้องถูกปฏิเสธ',
+      message: reason ? `${rejected.title} · เหตุผล: ${reason}` : rejected.title,
+      bookingId: rejected.id,
+      link:    `/my-bookings?bookingId=${rejected.id}`,
+    });
+  } catch (e) {
+    console.error('in-app rejected notif failed:', e.message);
+  }
+
   return rejected;
+}
+
+// cron: auto-cancel pending_approval ที่ start_time ผ่านไปแล้ว → cancelled
+// (กันค้าง — staff/admin ไม่ approve ทันเวลา ห้องจะไม่ถูก lock ไว้ใน DB ถาวร)
+async function autoExpirePending() {
+  const r = await pool.query(
+    `UPDATE bookings
+        SET status = 'cancelled',
+            rejected_reason = 'ไม่ได้รับการอนุมัติทันเวลา (auto-expired)',
+            approved_at = NOW()
+      WHERE status = 'pending_approval'
+        AND start_time < NOW()
+      RETURNING id, user_id, title, start_time, end_time,
+        (SELECT email FROM users WHERE id = user_id) AS user_email,
+        (SELECT name  FROM users WHERE id = user_id) AS user_name,
+        (SELECT name  FROM rooms WHERE id = room_id) AS room_name`
+  );
+  if (r.rowCount === 0) return 0;
+
+  console.log(`[pending-expire] auto-cancelled ${r.rowCount} expired pending booking(s)`);
+
+  for (const b of r.rows) {
+    // ส่ง webhook + in-app notif แจ้ง user
+    try {
+      await notificationService.sendApprovalDecision(b, 'rejected',
+        'ไม่ได้รับการอนุมัติทันเวลา');
+    } catch (e) {
+      console.error('expired notif webhook failed:', e.message);
+    }
+    try {
+      await inAppNotif.create({
+        userId:  b.user_id,
+        type:    'booking_rejected',
+        title:   'คำขอจองหมดเวลาอนุมัติ',
+        message: `${b.title} · ไม่ได้รับการอนุมัติทันเวลา`,
+        bookingId: b.id,
+        link:    `/my-bookings?bookingId=${b.id}`,
+      });
+    } catch (e) {
+      console.error('expired in-app notif failed:', e.message);
+    }
+    await auditService.log({
+      userId: b.user_id, bookingId: b.id, action: 'booking_auto_expired',
+      detail: { title: b.title, reason: 'pending_approval expired' },
+    });
+  }
+  return r.rowCount;
+}
+
+// admin ย้าย booking ไปห้องอื่น (เช่น Zoom account ห้องเดิมล่ม / maintenance)
+// ถ้าห้องใหม่ใช้ Zoom account คนละตัวกับห้องเดิม → ลบ meeting เดิม + สร้างใหม่
+async function reassignRoom(bookingId, newRoomId, adminId) {
+  const cur = await pool.query(
+    `SELECT b.*, r.zoom_account_id AS cur_zoom_account_id,
+            za.account_id AS cur_zoom_acc_str,
+            za.client_id AS cur_zoom_cid,
+            za.client_secret AS cur_zoom_cs,
+            rn.zoom_account_id AS new_zoom_account_id,
+            rn.capacity AS new_capacity, rn.name AS new_room_name, rn.is_active AS new_is_active
+       FROM bookings b
+       LEFT JOIN rooms r ON r.id = b.room_id
+       LEFT JOIN zoom_accounts za ON za.id = r.zoom_account_id
+       LEFT JOIN rooms rn ON rn.id = $2
+      WHERE b.id = $1`,
+    [bookingId, newRoomId]
+  );
+  if (cur.rows.length === 0) throw { status: 404, message: 'ไม่พบการจอง' };
+  const b = cur.rows[0];
+
+  if (!b.new_capacity) throw { status: 404, message: 'ไม่พบห้องปลายทาง' };
+  if (!b.new_is_active) throw { status: 400, message: 'ห้องปลายทางถูกปิดใช้งาน' };
+  if (b.status !== 'confirmed' && b.status !== 'pending_approval') {
+    throw { status: 400, message: 'ย้ายได้เฉพาะ booking ที่ confirmed หรือ pending_approval' };
+  }
+  if (b.room_id === newRoomId) throw { status: 400, message: 'ห้องปลายทางเป็นห้องเดิม' };
+
+  // ห้องใหม่ต้องไม่มี booking ชนเวลานี้
+  if (await checkConflict(b.start_time.toISOString(), b.end_time.toISOString(), newRoomId)) {
+    throw { status: 409, message: 'ห้องปลายทางมีการจองชนเวลานี้แล้ว' };
+  }
+
+  const zoomAccountChanged = b.cur_zoom_account_id !== b.new_zoom_account_id;
+  const oldCreds = b.cur_zoom_acc_str ? {
+    accountId:    b.cur_zoom_acc_str,
+    clientId:     b.cur_zoom_cid,
+    clientSecret: b.cur_zoom_cs,
+  } : null;
+
+  let newMeeting = null;
+  // ถ้า zoom_account ใหม่ต่างกับเดิม + booking มี meeting อยู่แล้ว → สร้าง meeting ใหม่ก่อน
+  if (zoomAccountChanged && b.zoom_meeting_id && b.status === 'confirmed') {
+    const newRoomCreds = await pool.query(
+      `SELECT za.account_id, za.client_id, za.client_secret
+         FROM rooms r JOIN zoom_accounts za ON za.id = r.zoom_account_id
+        WHERE r.id = $1`,
+      [newRoomId]
+    );
+    if (newRoomCreds.rows.length === 0 && b.new_capacity > 100) {
+      throw { status: 409, message: 'ห้องปลายทาง Pro plan ยังไม่ผูก Zoom account' };
+    }
+    const creds = newRoomCreds.rows[0] ? {
+      accountId:    newRoomCreds.rows[0].account_id,
+      clientId:     newRoomCreds.rows[0].client_id,
+      clientSecret: newRoomCreds.rows[0].client_secret,
+    } : null;
+    const duration = (new Date(b.end_time) - new Date(b.start_time)) / 60000;
+    try {
+      newMeeting = await zoomService.createMeeting({
+        title:           b.title,
+        startTime:       b.start_time.toISOString(),
+        durationMinutes: Math.ceil(duration),
+        creds,
+        coHostEmails:    b.co_host_emails || [],
+      });
+    } catch (err) {
+      throw { status: 502, message: 'สร้าง meeting ในห้องใหม่ไม่สำเร็จ — ยกเลิกการย้าย' };
+    }
+  }
+
+  // update booking (trigger จะ sync zoom_account_id ให้)
+  const upd = await pool.query(
+    `UPDATE bookings
+        SET room_id = $1,
+            zoom_meeting_id = COALESCE($3, zoom_meeting_id),
+            zoom_join_url   = COALESCE($4, zoom_join_url),
+            zoom_password   = COALESCE($5, zoom_password)
+      WHERE id = $2
+      RETURNING *,
+        (SELECT email FROM users WHERE id = user_id) AS user_email,
+        (SELECT name  FROM users WHERE id = user_id) AS user_name`,
+    [newRoomId, bookingId,
+     newMeeting ? newMeeting.meetingId : null,
+     newMeeting ? newMeeting.joinUrl  : null,
+     newMeeting ? newMeeting.password : null]
+  );
+  const moved = upd.rows[0];
+  moved.room_name = b.new_room_name;
+
+  // ลบ meeting เดิมถ้าเปลี่ยน account (best-effort)
+  if (zoomAccountChanged && newMeeting && b.zoom_meeting_id) {
+    try { await zoomService.deleteMeeting(b.zoom_meeting_id, oldCreds); }
+    catch (e) { console.error('reassign: old zoom delete failed:', e.message); }
+  }
+
+  await auditService.log({
+    userId: adminId, bookingId, action: 'booking_reassigned_room',
+    detail: {
+      old_room_id: b.room_id, new_room_id: newRoomId,
+      zoom_account_changed: zoomAccountChanged,
+      new_meeting_id: newMeeting?.meetingId || null,
+    },
+  });
+
+  // แจ้ง user เจ้าของ booking
+  try {
+    await inAppNotif.create({
+      userId:  moved.user_id,
+      type:    'booking_reassigned',
+      title:   'การจองถูกย้ายห้อง',
+      message: `${moved.title} · ย้ายไปห้อง ${b.new_room_name}${zoomAccountChanged ? ' (ลิงก์ Zoom ใหม่)' : ''}`,
+      bookingId: moved.id,
+      link:    `/my-bookings?bookingId=${moved.id}`,
+    });
+  } catch (e) { console.error('reassign in-app notif failed:', e.message); }
+
+  if (newMeeting) {
+    try { await notificationService.sendBookingConfirmation(moved); }
+    catch (e) { console.error('reassign confirmation webhook failed:', e.message); }
+  }
+
+  return moved;
+}
+
+// Zoom webhook event handler: update actual_started_at / actual_ended_at
+async function handleZoomWebhookEvent(event) {
+  const meetingId = event?.payload?.object?.id;
+  if (!meetingId) return { handled: false, reason: 'no meeting id' };
+
+  if (event.event === 'meeting.started') {
+    const r = await pool.query(
+      `UPDATE bookings SET actual_started_at = NOW()
+        WHERE zoom_meeting_id = $1::text AND actual_started_at IS NULL
+        RETURNING id`,
+      [String(meetingId)]
+    );
+    return { handled: true, event: 'meeting.started', updated: r.rowCount };
+  }
+
+  if (event.event === 'meeting.ended') {
+    const r = await pool.query(
+      `UPDATE bookings SET actual_ended_at = NOW()
+        WHERE zoom_meeting_id = $1::text AND actual_ended_at IS NULL
+        RETURNING id`,
+      [String(meetingId)]
+    );
+    return { handled: true, event: 'meeting.ended', updated: r.rowCount };
+  }
+
+  if (event.event === 'meeting.participant_joined') {
+    // นับ participant แบบ counter+1
+    const r = await pool.query(
+      `UPDATE bookings
+          SET participant_count = COALESCE(participant_count, 0) + 1
+        WHERE zoom_meeting_id = $1::text
+        RETURNING id`,
+      [String(meetingId)]
+    );
+    return { handled: true, event: 'meeting.participant_joined', updated: r.rowCount };
+  }
+
+  return { handled: false, event: event.event };
 }
 
 // admin โอน ownership ให้ user อื่น (เช่นเจ้าของลาออก)
@@ -807,7 +1197,10 @@ module.exports = {
   approveBooking,
   rejectBooking,
   transferOwnership,
+  reassignRoom,
+  autoExpirePending,
+  handleZoomWebhookEvent,
   getPriorityWeeklyHours,
-  APPROVAL_CAPACITY_THRESHOLD,
+  requiresApproval,
   PRIORITY_WEEKLY_HOURS_CAP,
 };

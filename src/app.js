@@ -30,14 +30,20 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-const authRoutes    = require('./routes/auth');
-const bookingRoutes = require('./routes/bookings');
-const adminRoutes   = require('./routes/admin');
-const authenticate  = require('./middleware/authenticate');
+const authRoutes          = require('./routes/auth');
+const bookingRoutes       = require('./routes/bookings');
+const adminRoutes         = require('./routes/admin');
+const notificationRoutes  = require('./routes/notifications');
+const zoomWebhookRoutes   = require('./routes/zoomWebhook');
+const authenticate        = require('./middleware/authenticate');
 
-app.use('/auth',     authLimiter, authRoutes);
-app.use('/bookings', apiLimiter, authenticate, bookingRoutes);
-app.use('/admin',    apiLimiter, authenticate, adminRoutes);
+// Zoom webhook (ไม่ผ่าน authenticate — verify ด้วย signature ใน route เอง)
+app.use('/webhooks', zoomWebhookRoutes);
+
+app.use('/auth',          authLimiter, authRoutes);
+app.use('/bookings',      apiLimiter, authenticate, bookingRoutes);
+app.use('/admin',         apiLimiter, authenticate, adminRoutes);
+app.use('/notifications', apiLimiter, authenticate, notificationRoutes);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date() });

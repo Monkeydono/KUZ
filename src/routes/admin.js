@@ -133,10 +133,14 @@ router.get('/bookings', async (req, res, next) => {
   }
 });
 
-// DELETE /admin/bookings/:id — admin/staff ยกเลิก booking ใดก็ได้
+// DELETE /admin/bookings/:id — admin/staff ยกเลิก booking ใดก็ได้ (ต้องใส่เหตุผล)
 router.delete('/bookings/:id', async (req, res, next) => {
   try {
-    const result = await bookingService.cancelBooking(req.params.id, req.user.id, 'admin');
+    const reason = req.body?.reason || req.query.reason || null;
+    const scope  = req.query.scope || 'this';
+    const result = await bookingService.cancelBooking(
+      req.params.id, req.user.id, req.user.role, scope, reason
+    );
     res.json(result);
   } catch (err) {
     next(err);
@@ -166,6 +170,16 @@ router.patch('/bookings/:id/transfer', requireAdmin, async (req, res, next) => {
     const { new_user_id } = req.body;
     if (!new_user_id) return res.status(400).json({ error: 'ต้องระบุ new_user_id' });
     const result = await bookingService.transferOwnership(req.params.id, new_user_id, req.user.id);
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+// PATCH /admin/bookings/:id/reassign-room — admin/staff ย้ายห้อง (กรณี Zoom account ล่ม / maintenance)
+router.patch('/bookings/:id/reassign-room', async (req, res, next) => {
+  try {
+    const { new_room_id } = req.body;
+    if (!new_room_id) return res.status(400).json({ error: 'ต้องระบุ new_room_id' });
+    const result = await bookingService.reassignRoom(req.params.id, new_room_id, req.user.id);
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -440,6 +454,51 @@ router.get('/zoom-accounts/:id/health', requireAdmin, async (req, res, next) => 
         status: err.zoomStatus,
       });
     }
+  } catch (err) { next(err); }
+});
+
+// GET /admin/zoom-accounts/:id/utilization — สถิติการใช้งานของ account นี้
+// query params: days (default 30) — ช่วงย้อนหลังที่จะ aggregate
+router.get('/zoom-accounts/:id/utilization', async (req, res, next) => {
+  try {
+    const days = Math.min(parseInt(req.query.days, 10) || 30, 365);
+    const r = await pool.query(
+      `WITH stats AS (
+         SELECT b.id, b.start_time, b.end_time, b.actual_started_at, b.actual_ended_at,
+                EXTRACT(EPOCH FROM (b.end_time - b.start_time)) / 3600 AS scheduled_hours,
+                CASE
+                  WHEN b.actual_started_at IS NOT NULL AND b.actual_ended_at IS NOT NULL
+                  THEN EXTRACT(EPOCH FROM (b.actual_ended_at - b.actual_started_at)) / 3600
+                  ELSE NULL
+                END AS actual_hours,
+                EXTRACT(HOUR FROM (b.start_time AT TIME ZONE 'Asia/Bangkok')) AS hour_of_day
+           FROM bookings b
+           JOIN rooms r ON r.id = b.room_id
+          WHERE r.zoom_account_id = $1
+            AND b.status IN ('confirmed', 'completed', 'pending_approval')
+            AND b.start_time >= NOW() - ($2 || ' days')::interval
+       )
+       SELECT
+         (SELECT COUNT(*)::int FROM stats) AS total_bookings,
+         (SELECT COALESCE(SUM(scheduled_hours), 0)::numeric(10,2) FROM stats) AS total_scheduled_hours,
+         (SELECT COALESCE(SUM(actual_hours), 0)::numeric(10,2) FROM stats WHERE actual_hours IS NOT NULL) AS total_actual_hours,
+         (SELECT COUNT(*)::int FROM stats WHERE actual_started_at IS NOT NULL) AS bookings_started,
+         (SELECT COUNT(*)::int FROM stats WHERE actual_started_at IS NULL AND end_time < NOW()) AS bookings_no_show,
+         (SELECT json_agg(json_build_object('hour', hour_of_day, 'count', cnt) ORDER BY hour_of_day)
+            FROM (SELECT hour_of_day, COUNT(*)::int AS cnt FROM stats GROUP BY hour_of_day) h
+         ) AS hourly_distribution,
+         (SELECT json_agg(json_build_object(
+                'name', r.name, 'capacity', r.capacity,
+                'booking_count', (SELECT COUNT(*) FROM bookings b
+                                   WHERE b.room_id = r.id AND b.status IN ('confirmed','completed','pending_approval')
+                                     AND b.start_time >= NOW() - ($2 || ' days')::interval)
+              ))
+            FROM rooms r WHERE r.zoom_account_id = $1
+         ) AS rooms_breakdown
+      `,
+      [req.params.id, String(days)]
+    );
+    res.json({ ...r.rows[0], window_days: days });
   } catch (err) { next(err); }
 });
 

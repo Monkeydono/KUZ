@@ -16,24 +16,40 @@ router.get('/rooms', async (req, res, next) => {
 
 router.get('/available', async (req, res, next) => {
   try {
-    const { date, roomId } = req.query;
-    // ถ้าไม่ส่ง roomId → ใช้ default room (เพื่อ backward compat)
-    const targetRoom = roomId || await roomService.getDefaultRoomId();
+    const { date, roomId, capacity } = req.query;
+
+    // 3 modes: capacity tier (preferred) | specific roomId | default room
+    let roomIds;
+    if (capacity) {
+      const cap = parseInt(capacity, 10);
+      roomIds = await roomService.getRoomIdsByCapacity(cap, req.user.role);
+    } else if (roomId) {
+      roomIds = [roomId];
+    } else {
+      const def = await roomService.getDefaultRoomId();
+      roomIds = def ? [def] : [];
+    }
+
+    if (roomIds.length === 0) {
+      return res.json({ total_rooms: 0, bookings: [] });
+    }
+
+    // รวม pending_approval ด้วย — slot ถูกจองเสมือนแล้ว (กัน double-book + แสดงให้คนอื่นเห็นว่าไม่ว่าง)
     const result = await pool.query(
-      `SELECT start_time, end_time,
+      `SELECT start_time, end_time, room_id,
               (user_id = $2) AS is_mine,
               EXISTS (
                 SELECT 1 FROM unnest(co_host_emails) AS ch(email)
                  WHERE LOWER(ch.email) = LOWER($3)
               ) AS is_co_host
          FROM bookings
-        WHERE status = 'confirmed'
+        WHERE status IN ('confirmed', 'pending_approval')
           AND DATE(start_time AT TIME ZONE 'Asia/Bangkok') = $1
-          AND ($4::uuid IS NULL OR room_id = $4)
+          AND room_id = ANY($4::uuid[])
         ORDER BY start_time`,
-      [date, req.user.id, req.user.email, targetRoom]
+      [date, req.user.id, req.user.email, roomIds]
     );
-    res.json(result.rows);
+    res.json({ total_rooms: roomIds.length, bookings: result.rows });
   } catch (err) {
     next(err);
   }
@@ -52,7 +68,7 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { title, startTime, endTime, coHostEmails, recurring, roomId, notes } = req.body;
+    const { title, startTime, endTime, coHostEmails, recurring, roomId, capacity, notes } = req.body;
     const args = {
       userId:    req.user.id,
       userEmail: req.user.email,
@@ -62,6 +78,7 @@ router.post('/', async (req, res, next) => {
       endTime,
       coHostEmails,
       roomId,
+      capacity,
       notes,
     };
     if (recurring && recurring.count > 1) {
@@ -78,9 +95,10 @@ router.post('/', async (req, res, next) => {
 
 router.delete('/:id', async (req, res, next) => {
   try {
-    const scope = req.query.scope || 'this';
+    const scope  = req.query.scope || 'this';
+    const reason = req.body?.reason || req.query.reason || null;
     const result = await bookingService.cancelBooking(
-      req.params.id, req.user.id, req.user.role, scope
+      req.params.id, req.user.id, req.user.role, scope, reason
     );
     res.json(result);
   } catch (err) {

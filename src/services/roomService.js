@@ -61,4 +61,104 @@ async function listAvailableRooms(role) {
   return r.rows;
 }
 
-module.exports = { getRoomWithCreds, getDefaultRoomId, listAvailableRooms };
+// query ids ของห้องทั้งหมดใน tier (capacity) ที่ role ปัจจุบันใช้งานได้
+// ใช้เป็น base ของ tier-availability + auto-assignment เมื่อ Pro plan มีหลายห้องต่อ tier
+async function getRoomIdsByCapacity(capacity, role) {
+  const conds = ['is_active = true', 'capacity = $1'];
+  const params = [capacity];
+  if (role !== 'admin' && role !== 'priority') {
+    conds.push('is_priority_only = false');
+  }
+  // Pro tier (>100) ต้องมี zoom_account ผูก = พร้อมใช้งาน
+  if (capacity > 100) {
+    conds.push('zoom_account_id IS NOT NULL');
+  }
+  const r = await pool.query(
+    `SELECT id FROM rooms WHERE ${conds.join(' AND ')} ORDER BY created_at ASC`,
+    params
+  );
+  return r.rows.map(row => row.id);
+}
+
+// หาห้องว่างใน tier ตามเวลาที่ขอ — return room object เต็มพร้อม creds, หรือ null ถ้าเต็มหมด
+// ใช้ตอน user เลือก capacity แทน roomId → backend auto-pick
+// excludeIds: Set ของ id ที่เคยลองแล้ว (สำหรับ race retry)
+async function findAvailableRoomByCapacity(capacity, startTime, endTime, role, excludeIds = new Set()) {
+  const ids = await getRoomIdsByCapacity(capacity, role);
+  for (const id of ids) {
+    if (excludeIds.has(id)) continue;
+    const conflict = await pool.query(
+      `SELECT 1 FROM bookings
+        WHERE status IN ('confirmed', 'pending_approval')
+          AND room_id = $1
+          AND numrange(
+                kuz_epoch(start_time),
+                kuz_epoch(end_time) + 60,
+                '[)'
+              )
+           && numrange(
+                kuz_epoch($2::timestamptz),
+                kuz_epoch($3::timestamptz) + 60,
+                '[)'
+              )
+        LIMIT 1`,
+      [id, startTime, endTime]
+    );
+    if (conflict.rowCount === 0) {
+      return await getRoomWithCreds(id);
+    }
+  }
+  return null;
+}
+
+// หาห้องที่ว่างครบทุก occurrence ใน series — ใช้สำหรับ recurring + capacity-based
+// (ไม่ใช่แค่ห้องว่างช่วง first occurrence — ต้องว่างทุกครั้งจึงจะใช้ห้องเดียวกันได้)
+async function findAvailableRoomForAllOccurrences(capacity, occurrences, role) {
+  const ids = await getRoomIdsByCapacity(capacity, role);
+  for (const id of ids) {
+    let allFree = true;
+    for (const o of occurrences) {
+      const c = await pool.query(
+        `SELECT 1 FROM bookings
+          WHERE status IN ('confirmed', 'pending_approval')
+            AND room_id = $1
+            AND numrange(kuz_epoch(start_time), kuz_epoch(end_time) + 60, '[)')
+             && numrange(kuz_epoch($2::timestamptz), kuz_epoch($3::timestamptz) + 60, '[)')
+          LIMIT 1`,
+        [id, o.startTime, o.endTime]
+      );
+      if (c.rowCount > 0) { allFree = false; break; }
+    }
+    if (allFree) return await getRoomWithCreds(id);
+  }
+  return null;
+}
+
+// แนะนำ tier ขนาดใหญ่ขึ้นที่ยังมีห้องว่างในช่วงเวลานี้ — ใช้ใน error message
+async function suggestAvailableLargerTier(currentCapacity, startTime, endTime, role) {
+  const conds = ['is_active = true', 'capacity > $1'];
+  const params = [currentCapacity];
+  if (role !== 'admin' && role !== 'priority') {
+    conds.push('is_priority_only = false');
+  }
+  conds.push('zoom_account_id IS NOT NULL'); // tier ใหญ่กว่า 100 ต้องมี Pro account
+  const r = await pool.query(
+    `SELECT DISTINCT capacity FROM rooms WHERE ${conds.join(' AND ')} ORDER BY capacity ASC`,
+    params
+  );
+  for (const row of r.rows) {
+    const found = await findAvailableRoomByCapacity(row.capacity, startTime, endTime, role);
+    if (found) return row.capacity;
+  }
+  return null;
+}
+
+module.exports = {
+  getRoomWithCreds,
+  getDefaultRoomId,
+  listAvailableRooms,
+  getRoomIdsByCapacity,
+  findAvailableRoomByCapacity,
+  findAvailableRoomForAllOccurrences,
+  suggestAvailableLargerTier,
+};

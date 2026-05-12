@@ -1,11 +1,13 @@
-import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Calendar, Clock, CalendarX2, AlertCircle, X, Users as UsersIcon } from 'lucide-react'
 import api from '../api'
 import Navbar from '../components/Navbar'
 
 function MyBookings() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const focusBookingId = searchParams.get('bookingId')
   const [bookings, setBookings] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -13,10 +15,29 @@ function MyBookings() {
   const [cancelScope, setCancelScope] = useState('this')
   const [cancelLoading, setCancelLoading] = useState(false)
   const [cancelError, setCancelError] = useState('')
+  const focusRef = useRef(null)
+  const [highlightId, setHighlightId] = useState(focusBookingId)
 
   useEffect(() => {
     fetchBookings()
   }, [])
+
+  // sync เมื่อ URL ?bookingId= เปลี่ยน (คลิก notification ตัวอื่นทั้งที่อยู่หน้านี้)
+  useEffect(() => {
+    if (focusBookingId) setHighlightId(focusBookingId)
+  }, [focusBookingId])
+
+  // scroll → highlight booking จาก ?bookingId= (มาจาก notification click)
+  useEffect(() => {
+    if (!highlightId || loading) return
+    const timer = setTimeout(() => {
+      if (focusRef.current) {
+        focusRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }, 150)
+    const fade = setTimeout(() => setHighlightId(null), 4000)
+    return () => { clearTimeout(timer); clearTimeout(fade) }
+  }, [highlightId, loading, bookings])
 
   const fetchBookings = async () => {
     try {
@@ -162,8 +183,18 @@ function MyBookings() {
           {filtered.map(b => {
             const st = statusLabel(b.status)
             const isPast = new Date(b.end_time) < new Date()
+            const isFocus = highlightId === b.id
             return (
-              <div key={b.id} style={s.card} className="ku-booking-card">
+              <div
+                key={b.id}
+                ref={isFocus ? focusRef : null}
+                style={{
+                  ...s.card,
+                  ...(isFocus ? { boxShadow: '0 0 0 3px #fde68a, 0 8px 24px rgba(180, 83, 9, 0.25)' } : {}),
+                  transition: 'box-shadow 0.5s',
+                }}
+                className="ku-booking-card"
+              >
                 <div style={{ ...s.statusBar, background: st.color }} />
                 <div style={s.cardInner}>
                   <div style={s.cardTop}>

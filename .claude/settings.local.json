@@ -6,7 +6,13 @@
       "Bash(node -c src/routes/admin.js)",
       "Bash(node -c src/routes/bookings.js)",
       "Bash(npx --yes esbuild --loader:.jsx=jsx --log-level=warning src/pages/book.jsx)",
-      "Bash(npx --yes esbuild --loader:.jsx=jsx --log-level=warning src/pages/admin.jsx)"
+      "Bash(npx --yes esbuild --loader:.jsx=jsx --log-level=warning src/pages/admin.jsx)",
+      "Bash(node -c src/services/inAppNotificationService.js)",
+      "Bash(node -c src/routes/notifications.js)",
+      "Bash(node -c src/app.js)",
+      "Bash(node -c src/server.js)",
+      "Bash(npx esbuild *)",
+      "PowerShell(Push-Location frontend; npx esbuild src/components/Navbar.jsx --bundle --loader:.jsx=jsx --outfile=$env:TEMP/nav.js --log-level=error 2>&1 | Select-Object -First 30; Pop-Location)"
     ]
   }
 }

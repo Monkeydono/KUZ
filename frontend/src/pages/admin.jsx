@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Download, Activity, Building2, Video, Plus, Edit3, Check } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Download, Activity, Building2, Video, Plus, Edit3, Check, Move } from 'lucide-react'
 import api from '../api'
 import Navbar from '../components/Navbar'
 import { useUser } from '../useUser'
@@ -27,7 +27,12 @@ const STATUS_LABELS = {
 function Admin() {
   const { user, loading: userLoading, isAdmin, isStaffOrAdmin } = useUser()
   const navigate = useNavigate()
-  const [tab, setTab] = useState('overview')
+  const [searchParams] = useSearchParams()
+  // อ่าน ?tab= ตอน mount — ใช้ตอน notification click ไป admin?tab=pending&bookingId=...
+  const initialTab = searchParams.get('tab') === 'pending' ? 'bookings' : (searchParams.get('tab') || 'overview')
+  const focusBookingId = searchParams.get('bookingId')
+  const initialStatus = searchParams.get('tab') === 'pending' ? 'pending_approval' : ''
+  const [tab, setTab] = useState(initialTab)
 
   if (userLoading) return null
   if (!isStaffOrAdmin) {
@@ -68,7 +73,7 @@ function Admin() {
         </div>
 
         {tab === 'overview' && <Overview />}
-        {tab === 'bookings' && <Bookings isAdmin={isAdmin} />}
+        {tab === 'bookings' && <Bookings isAdmin={isAdmin} initialStatus={initialStatus} focusBookingId={focusBookingId} />}
         {tab === 'users'    && <UsersTab currentUserId={user?.id} isAdmin={isAdmin} />}
         {tab === 'rooms'    && isAdmin && <RoomsTab />}
         {tab === 'audit'    && <AuditTab />}
@@ -273,14 +278,47 @@ function PieList({ data }) {
   )
 }
 
-function Bookings({ isAdmin }) {
+function Bookings({ isAdmin, initialStatus = '', focusBookingId = null }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filters, setFilters] = useState({ status: '', search: '' })
+  const [filters, setFilters] = useState({ status: initialStatus, search: '' })
   const [confirmDel, setConfirmDel] = useState(null)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelError, setCancelError] = useState('')
   const [rejectModal, setRejectModal] = useState(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [reassignModal, setReassignModal] = useState(null) // { booking, rooms, newRoomId, error }
   const [actionLoading, setActionLoading] = useState(false)
+  const focusRef = useRef(null)
+  const [highlightId, setHighlightId] = useState(focusBookingId)
+
+  const openReassign = async (booking) => {
+    setReassignModal({ booking, rooms: [], newRoomId: '', error: '', loading: true })
+    try {
+      const r = await api.get('/admin/rooms')
+      const compat = r.data.filter(rm => rm.is_active && rm.id !== booking.room_id && rm.capacity >= booking.room_capacity)
+      setReassignModal({ booking, rooms: compat, newRoomId: '', error: '', loading: false })
+    } catch (err) {
+      setReassignModal({ booking, rooms: [], newRoomId: '', error: err.response?.data?.error || 'โหลดรายการห้องไม่สำเร็จ', loading: false })
+    }
+  }
+
+  const submitReassign = async () => {
+    if (!reassignModal?.newRoomId) {
+      setReassignModal({ ...reassignModal, error: 'กรุณาเลือกห้องปลายทาง' })
+      return
+    }
+    setActionLoading(true)
+    try {
+      await api.patch(`/admin/bookings/${reassignModal.booking.id}/reassign-room`, {
+        new_room_id: reassignModal.newRoomId,
+      })
+      setReassignModal(null)
+      fetchItems()
+    } catch (err) {
+      setReassignModal({ ...reassignModal, error: err.response?.data?.error || 'ย้ายห้องไม่สำเร็จ' })
+    } finally { setActionLoading(false) }
+  }
 
   const fetchItems = () => {
     setLoading(true)
@@ -292,6 +330,23 @@ function Bookings({ isAdmin }) {
       .finally(() => setLoading(false))
   }
   useEffect(() => { fetchItems() }, [filters])
+
+  // sync เมื่อ URL ?bookingId= เปลี่ยน
+  useEffect(() => {
+    if (focusBookingId) setHighlightId(focusBookingId)
+  }, [focusBookingId])
+
+  // scroll → highlight booking ที่มาจาก notification (?bookingId=...)
+  useEffect(() => {
+    if (!highlightId || loading) return
+    const timer = setTimeout(() => {
+      if (focusRef.current) {
+        focusRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }, 150)
+    const fade = setTimeout(() => setHighlightId(null), 4000)
+    return () => { clearTimeout(timer); clearTimeout(fade) }
+  }, [highlightId, loading, items])
 
   const approve = async (id) => {
     if (!confirm('อนุมัติการจองนี้?')) return
@@ -317,14 +372,37 @@ function Bookings({ isAdmin }) {
     } finally { setActionLoading(false) }
   }
 
-  const cancel = async (id) => {
+  const cancel = async () => {
+    if (!confirmDel) return
+    setCancelError('')
+    if (!cancelReason.trim()) {
+      setCancelError('กรุณาระบุเหตุผลในการยกเลิก')
+      return
+    }
+    setActionLoading(true)
     try {
-      await api.delete(`/admin/bookings/${id}`)
+      await api.delete(`/admin/bookings/${confirmDel.id}`, {
+        data: { reason: cancelReason.trim() },
+      })
       setConfirmDel(null)
+      setCancelReason('')
       fetchItems()
     } catch (err) {
-      alert(err.response?.data?.error || 'ยกเลิกไม่สำเร็จ')
-    }
+      setCancelError(err.response?.data?.error || 'ยกเลิกไม่สำเร็จ')
+    } finally { setActionLoading(false) }
+  }
+
+  const openCancel = (booking) => {
+    setCancelReason('')
+    setCancelError('')
+    setConfirmDel(booking)
+  }
+
+  const closeCancel = () => {
+    if (actionLoading) return
+    setConfirmDel(null)
+    setCancelReason('')
+    setCancelError('')
   }
 
   return (
@@ -382,8 +460,13 @@ function Bookings({ isAdmin }) {
                 const meta = STATUS_LABELS[b.status] || { text: b.status, color: '#888', bg: '#f0f0f0' }
                 // admin ยกเลิกได้ทุก booking ที่ยัง confirmed (รวมที่เริ่มไปแล้ว)
                 const canCancel = b.status === 'confirmed'
+                const isFocus = highlightId === b.id
                 return (
-                  <tr key={b.id}>
+                  <tr
+                    key={b.id}
+                    ref={isFocus ? focusRef : null}
+                    style={isFocus ? { background: '#fef3c7', transition: 'background 0.5s' } : null}
+                  >
                     <td style={s.td}>
                       <div style={{ fontWeight: 600 }}>{b.title}</div>
                       {b.room_name && (
@@ -444,8 +527,17 @@ function Bookings({ isAdmin }) {
                           </button>
                         </>
                       )}
+                      {(b.status === 'confirmed' || b.status === 'pending_approval') && (
+                        <button
+                          style={{ ...s.iconBtn, marginRight: 6, color: '#0369a1' }}
+                          onClick={() => openReassign(b)}
+                          title="ย้ายห้อง (เช่น Zoom account ล่ม)"
+                        >
+                          <Move size={14} />
+                        </button>
+                      )}
                       {canCancel && (
-                        <button style={s.iconBtn} onClick={() => setConfirmDel(b)} title="ยกเลิก">
+                        <button style={s.iconBtn} onClick={() => openCancel(b)} title="ยกเลิก">
                           <Trash2 size={14} />
                         </button>
                       )}
@@ -462,18 +554,60 @@ function Bookings({ isAdmin }) {
       </div>
 
       {confirmDel && (
-        <div style={s.overlay} onClick={() => setConfirmDel(null)}>
+        <div style={s.overlay} onClick={closeCancel}>
           <div style={s.modal} onClick={e => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <h3 style={s.modalTitle}>ยืนยันการยกเลิก</h3>
-              <button style={s.closeBtn} onClick={() => setConfirmDel(null)}><X size={18} /></button>
+              <button style={s.closeBtn} onClick={closeCancel} disabled={actionLoading}>
+                <X size={18} />
+              </button>
             </div>
             <div style={s.modalBody}>
-              <p>ยกเลิกการจอง <strong>{confirmDel.title}</strong> ของ {confirmDel.user_email}?</p>
+              <p style={{ margin: '0 0 12px' }}>
+                ยกเลิกการจอง <strong>{confirmDel.title}</strong> ของ {confirmDel.user_email}?
+              </p>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#333', display: 'block', marginBottom: 6 }}>
+                เหตุผลในการยกเลิก <span style={{ color: '#c62828' }}>*</span>
+                <span style={{ fontWeight: 400, color: '#888' }}> — จะถูกแจ้งให้ผู้จองทราบ</span>
+              </label>
+              <textarea
+                value={cancelReason}
+                onChange={e => setCancelReason(e.target.value)}
+                disabled={actionLoading}
+                maxLength={500}
+                placeholder="เช่น: ห้องชนกับเหตุการณ์สำคัญ / ข้อมูลในหัวข้อไม่เหมาะสม"
+                style={{
+                  width: '100%', minHeight: 80, resize: 'vertical',
+                  padding: 10, fontSize: 13, fontFamily: 'inherit',
+                  border: '1.5px solid #dde3dd', borderRadius: 8,
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ fontSize: 11, color: '#888', textAlign: 'right', marginTop: 4 }}>
+                {cancelReason.length} / 500
+              </div>
+              {cancelError && (
+                <div style={{
+                  marginTop: 10, background: '#fff0f0',
+                  border: '1px solid #ffcccc', color: '#cc3333',
+                  padding: '8px 12px', borderRadius: 8, fontSize: 13,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <AlertCircle size={14} /> {cancelError}
+                </div>
+              )}
             </div>
             <div style={s.modalFooter}>
-              <button style={s.cancelBtn} onClick={() => setConfirmDel(null)}>ไม่ใช่</button>
-              <button style={s.confirmBtn} onClick={() => cancel(confirmDel.id)}>ยืนยันยกเลิก</button>
+              <button style={s.cancelBtn} onClick={closeCancel} disabled={actionLoading}>
+                ไม่ใช่
+              </button>
+              <button
+                style={{ ...s.confirmBtn, opacity: actionLoading ? 0.6 : 1 }}
+                onClick={cancel}
+                disabled={actionLoading}
+              >
+                {actionLoading ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิก'}
+              </button>
             </div>
           </div>
         </div>
@@ -518,6 +652,87 @@ function Bookings({ isAdmin }) {
                 disabled={actionLoading}
               >
                 {actionLoading ? 'กำลังปฏิเสธ...' : 'ยืนยันปฏิเสธ'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reassignModal && (
+        <div style={s.overlay} onClick={() => !actionLoading && setReassignModal(null)}>
+          <div style={s.modal} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>ย้ายห้อง</h3>
+              <button style={s.closeBtn} onClick={() => setReassignModal(null)} disabled={actionLoading}>
+                <X size={18} />
+              </button>
+            </div>
+            <div style={s.modalBody}>
+              <p style={{ margin: '0 0 12px' }}>
+                ย้าย <strong>{reassignModal.booking.title}</strong> ของ {reassignModal.booking.user_email}<br />
+                <span style={{ fontSize: 12, color: '#888' }}>
+                  ห้องปัจจุบัน: {reassignModal.booking.room_name} ({reassignModal.booking.room_capacity} คน)
+                </span>
+              </p>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#333', display: 'block', marginBottom: 6 }}>
+                ห้องปลายทาง <span style={{ color: '#c62828' }}>*</span>
+                <span style={{ fontWeight: 400, color: '#888' }}> — เฉพาะห้องที่ capacity ≥ ของเดิม</span>
+              </label>
+              {reassignModal.loading ? (
+                <div style={{ padding: 12, color: '#888' }}>กำลังโหลดรายการห้อง...</div>
+              ) : (
+                <select
+                  style={{
+                    width: '100%', padding: 10,
+                    border: '1.5px solid #dde3dd', borderRadius: 8, fontSize: 14,
+                    boxSizing: 'border-box',
+                  }}
+                  value={reassignModal.newRoomId}
+                  onChange={e => setReassignModal({ ...reassignModal, newRoomId: e.target.value, error: '' })}
+                  disabled={actionLoading}
+                >
+                  <option value="">— เลือกห้อง —</option>
+                  {reassignModal.rooms.map(r => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} ({r.capacity} คน)
+                      {r.zoom_account_label ? ` · ${r.zoom_account_label}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {!reassignModal.loading && reassignModal.rooms.length === 0 && (
+                <div style={{ marginTop: 10, fontSize: 12, color: '#888' }}>
+                  ไม่มีห้องอื่นที่รองรับ capacity ของ booking นี้
+                </div>
+              )}
+              <div style={{
+                marginTop: 12, padding: '8px 10px', background: '#fff8e1', borderRadius: 8,
+                border: '1px solid #fde68a', fontSize: 11, color: '#92400e', lineHeight: 1.5,
+              }}>
+                ⚠ ถ้าห้องปลายทางใช้ Zoom account ต่างกัน — meeting เดิมจะถูกลบและสร้างใหม่
+                ลิงก์ Zoom จะเปลี่ยน → ระบบจะแจ้ง user เจ้าของให้ทราบ
+              </div>
+              {reassignModal.error && (
+                <div style={{
+                  marginTop: 10, background: '#fff0f0',
+                  border: '1px solid #ffcccc', color: '#cc3333',
+                  padding: '8px 12px', borderRadius: 8, fontSize: 13,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <AlertCircle size={14} /> {reassignModal.error}
+                </div>
+              )}
+            </div>
+            <div style={s.modalFooter}>
+              <button style={s.cancelBtn} onClick={() => setReassignModal(null)} disabled={actionLoading}>
+                ยกเลิก
+              </button>
+              <button
+                style={{ ...s.confirmBtn, background: '#0369a1', opacity: actionLoading ? 0.6 : 1 }}
+                onClick={submitReassign}
+                disabled={actionLoading || !reassignModal.newRoomId}
+              >
+                {actionLoading ? 'กำลังย้าย...' : 'ยืนยันย้าย'}
               </button>
             </div>
           </div>
@@ -975,6 +1190,7 @@ function ZoomAccountsList() {
   const [editing, setEditing] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [utilView, setUtilView] = useState(null) // { account, data, loading }
 
   const fetchAll = () => {
     setLoading(true)
@@ -1049,6 +1265,16 @@ function ZoomAccountsList() {
     }
   }
 
+  const openUtilization = async (z) => {
+    setUtilView({ account: z, data: null, loading: true })
+    try {
+      const r = await api.get(`/admin/zoom-accounts/${z.id}/utilization?days=30`)
+      setUtilView({ account: z, data: r.data, loading: false })
+    } catch (err) {
+      setUtilView({ account: z, data: null, loading: false, error: err.response?.data?.error || err.message })
+    }
+  }
+
   if (loading) return <div style={s.loading}>กำลังโหลด...</div>
 
   return (
@@ -1098,6 +1324,13 @@ function ZoomAccountsList() {
                     )}
                   </td>
                   <td style={{ ...s.td, textAlign: 'right' }}>
+                    <button
+                      style={{ ...s.iconBtn, marginRight: 6, color: '#0369a1' }}
+                      onClick={() => openUtilization(z)}
+                      title="สถิติการใช้งาน 30 วัน"
+                    >
+                      <BarChart3 size={14} />
+                    </button>
                     <button style={s.iconBtn} onClick={() => openEdit(z)} title="แก้ไข">
                       <Edit3 size={14} />
                     </button>
@@ -1183,7 +1416,93 @@ function ZoomAccountsList() {
           </div>
         </div>
       )}
+
+      {utilView && (
+        <div style={s.overlay} onClick={() => setUtilView(null)}>
+          <div style={{ ...s.modal, maxWidth: 560 }} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h3 style={s.modalTitle}>สถิติการใช้งาน — {utilView.account.label}</h3>
+              <button style={s.closeBtn} onClick={() => setUtilView(null)}><X size={18} /></button>
+            </div>
+            <div style={s.modalBody}>
+              <div style={{ fontSize: 12, color: '#888', marginBottom: 12 }}>
+                ช่วง 30 วันที่ผ่านมา
+              </div>
+              {utilView.loading && <div style={{ padding: 20, textAlign: 'center', color: '#888' }}>กำลังโหลด...</div>}
+              {utilView.error && (
+                <div style={{ background: '#fff0f0', padding: 10, borderRadius: 8, color: '#cc3333' }}>
+                  {utilView.error}
+                </div>
+              )}
+              {utilView.data && (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 16 }}>
+                    <UtilStat label="Bookings ทั้งหมด" value={utilView.data.total_bookings} />
+                    <UtilStat label="ชั่วโมงที่จอง (schedule)" value={`${utilView.data.total_scheduled_hours} ชม.`} />
+                    <UtilStat label="ชั่วโมงที่ใช้จริง" value={`${utilView.data.total_actual_hours} ชม.`} hint="จาก Zoom webhook" />
+                    <UtilStat label="เริ่ม meeting แล้ว" value={`${utilView.data.bookings_started}`} hint="meeting.started" />
+                    <UtilStat label="No-show" value={`${utilView.data.bookings_no_show}`} hint="เลย end_time แต่ไม่เริ่ม" warn />
+                  </div>
+                  {utilView.data.rooms_breakdown && utilView.data.rooms_breakdown.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 8 }}>ห้องที่ใช้ account นี้</div>
+                      <table style={{ width: '100%', fontSize: 12, marginBottom: 12 }}>
+                        <tbody>
+                          {utilView.data.rooms_breakdown.map((r, i) => (
+                            <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                              <td style={{ padding: '6px 0' }}>{r.name} ({r.capacity} คน)</td>
+                              <td style={{ padding: '6px 0', textAlign: 'right', color: '#03A96B', fontWeight: 600 }}>{r.booking_count} bookings</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                  {utilView.data.hourly_distribution && utilView.data.hourly_distribution.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 8 }}>กราฟชั่วโมงที่นิยม</div>
+                      <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: 80, marginBottom: 8 }}>
+                        {(() => {
+                          const max = Math.max(...utilView.data.hourly_distribution.map(h => h.count), 1)
+                          return Array.from({ length: 24 }).map((_, hr) => {
+                            const entry = utilView.data.hourly_distribution.find(h => h.hour === hr)
+                            const c = entry?.count || 0
+                            return (
+                              <div key={hr} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                <div title={`${hr}:00 — ${c} bookings`}
+                                  style={{ width: '100%', height: `${(c/max)*72}px`, background: c > 0 ? '#1FBA7C' : '#f0f0f0', borderRadius: 2 }} />
+                                <span style={{ fontSize: 8, color: '#aaa' }}>{hr % 6 === 0 ? hr : ''}</span>
+                              </div>
+                            )
+                          })
+                        })()}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+            <div style={s.modalFooter}>
+              <button style={s.cancelBtn} onClick={() => setUtilView(null)}>ปิด</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
+  )
+}
+
+function UtilStat({ label, value, hint, warn }) {
+  return (
+    <div style={{
+      background: warn ? '#fff8e1' : '#F0FBF6',
+      border: `1px solid ${warn ? '#fde68a' : '#B5E8D2'}`,
+      borderRadius: 10, padding: '10px 12px',
+    }}>
+      <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: warn ? '#b45309' : '#03A96B' }}>{value}</div>
+      {hint && <div style={{ fontSize: 10, color: '#aaa', marginTop: 2 }}>{hint}</div>}
+    </div>
   )
 }
 
@@ -1196,6 +1515,11 @@ const ACTION_LABELS = {
   series_created:            { text: 'สร้าง series',    color: '#03A96B', bg: '#D9F5E7' },
   booking_cancelled:         { text: 'ยกเลิก',          color: '#c62828', bg: '#ffebee' },
   admin_cancelled:           { text: 'Admin ยกเลิก',    color: '#b91c1c', bg: '#fee2e2' },
+  staff_cancelled:           { text: 'Staff ยกเลิก',    color: '#b91c1c', bg: '#fee2e2' },
+  booking_reassigned_room:   { text: 'ย้ายห้อง',        color: '#0369a1', bg: '#e0f2fe' },
+  booking_auto_expired:      { text: 'หมดเวลาอนุมัติ',  color: '#92400e', bg: '#fef3c7' },
+  zoom_webhook_meeting_started: { text: 'Zoom เริ่ม',   color: '#1FBA7C', bg: '#D9F5E7' },
+  zoom_webhook_meeting_ended:   { text: 'Zoom จบ',     color: '#666',    bg: '#f0f0f0' },
   role_changed:              { text: 'เปลี่ยน role',    color: '#0369a1', bg: '#e0f2fe' },
   room_created:              { text: 'สร้างห้อง',        color: '#0369a1', bg: '#e0f2fe' },
   room_updated:              { text: 'แก้ห้อง',         color: '#0369a1', bg: '#e0f2fe' },
