@@ -50,7 +50,7 @@ passport.use(new GoogleStrategy({
   }
 }));
 
-// เริ่ม Google login — request scope รวม Calendar
+// เริ่ม Google login — request scope รวม Calendar + Drive (drive.file = app-created files only)
 // accessType: offline + prompt: consent → บังคับให้ได้ refresh_token เสมอ
 router.get('/google',
   passport.authenticate('google', {
@@ -58,6 +58,7 @@ router.get('/google',
       'profile',
       'email',
       'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/drive.file',
     ],
     accessType: 'offline',
     prompt: 'consent',

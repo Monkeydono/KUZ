@@ -5,6 +5,7 @@ const inAppNotif = require('./inAppNotificationService');
 const quotaService = require('./quotaService');
 const auditService = require('./auditService');
 const googleCalendarService = require('./googleCalendarService');
+const googleDriveService = require('./googleDriveService');
 const roomService = require('./roomService');
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -341,6 +342,10 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
     googleCalendarService.syncToAttendees(booking, [booking.user_email, ...coHosts])
       .catch(err => console.error('gcal sync failed:', err.message));
 
+    // Google Drive archive — best-effort, ไม่ block ถ้า fail
+    googleDriveService.archiveBooking({ ...booking, room_name: room.name, room_capacity: room.capacity })
+      .catch(err => console.error('gdrive archive failed:', err.message));
+
     return booking;
   };
 
@@ -587,6 +592,9 @@ async function createRecurringBooking({
     }
     googleCalendarService.syncToAttendees(b, [b.user_email, ...coHosts])
       .catch(err => console.error('gcal sync failed:', err.message));
+
+    googleDriveService.archiveBooking({ ...b, room_name: room.name, room_capacity: room.capacity })
+      .catch(err => console.error('gdrive archive failed:', err.message));
   }
 
   return inserted;
@@ -760,7 +768,21 @@ async function getUserBookings(userId, userEmail, { limit = 50, offset = 0 } = {
             u.name  AS owner_name,
             r.name  AS room_name,
             r.capacity AS room_capacity,
-            (b.user_id != $1) AS is_co_host
+            (b.user_id != $1) AS is_co_host,
+            (SELECT drive_url FROM booking_drive_files
+              WHERE booking_id = b.id AND file_type = 'folder' LIMIT 1) AS drive_folder_url,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'file_type', file_type,
+                'name',      file_name,
+                'url',       drive_url,
+                'mime',      mime_type,
+                'size',      size_bytes
+              ) ORDER BY created_at ASC)
+                FROM booking_drive_files
+               WHERE booking_id = b.id
+                 AND file_type IN ('recording', 'chat', 'transcript')
+            ), '[]'::json) AS drive_recordings
        FROM bookings b
        JOIN users u ON u.id = b.user_id
        LEFT JOIN rooms r ON r.id = b.room_id
@@ -895,6 +917,10 @@ async function approveBooking(bookingId, approverId) {
   }
   googleCalendarService.syncToAttendees(approved, [approved.user_email, ...(approved.co_host_emails || [])])
     .catch(err => console.error('gcal sync failed:', err.message));
+
+  // Drive archive — pending ไม่ archive (รอ approve ก่อน), confirmed ตอน approve นี้แหละ
+  googleDriveService.archiveBooking({ ...approved, room_capacity: booking.room_capacity })
+    .catch(err => console.error('gdrive archive failed:', err.message));
 
   // in-app notification ให้ user เจ้าของ booking
   try {
@@ -1165,6 +1191,96 @@ async function handleZoomWebhookEvent(event) {
       [String(meetingId)]
     );
     return { handled: true, event: 'meeting.participant_joined', updated: r.rowCount };
+  }
+
+  // recording.completed → download จาก Zoom + upload เข้า Drive folder ของ booking
+  // (รองรับ Pro plan ที่มี Cloud Recording — Free plan event นี้จะไม่ยิงมา)
+  if (event.event === 'recording.completed') {
+    const recObj = event.payload?.object;
+    const downloadToken = event.payload?.download_token || event.download_token;
+    if (!recObj || !downloadToken) {
+      return { handled: false, event: 'recording.completed', reason: 'missing payload' };
+    }
+
+    // find booking by zoom_meeting_id
+    const b = await pool.query(
+      `SELECT b.*, u.email AS user_email, u.name AS user_name
+         FROM bookings b JOIN users u ON u.id = b.user_id
+        WHERE zoom_meeting_id = $1::text LIMIT 1`,
+      [String(recObj.id)]
+    );
+    if (b.rows.length === 0) {
+      return { handled: false, event: 'recording.completed', reason: 'no booking match' };
+    }
+    const booking = b.rows[0];
+
+    const files = recObj.recording_files || [];
+    const uploaded = [];
+
+    for (const f of files) {
+      if (f.status && f.status !== 'completed') continue;
+
+      // file_type จาก Zoom: MP4, M4A, CHAT, TRANSCRIPT, TIMELINE, CC ฯลฯ
+      const zoomType = (f.file_type || f.file_extension || '').toUpperCase();
+      const mapping = {
+        MP4:        { type: 'recording', mime: 'video/mp4',  ext: 'mp4' },
+        M4A:        { type: 'recording', mime: 'audio/mp4',  ext: 'm4a' },
+        CHAT:       { type: 'chat',      mime: 'text/plain', ext: 'txt' },
+        TRANSCRIPT: { type: 'transcript', mime: 'text/vtt',  ext: 'vtt' },
+        CC:         { type: 'transcript', mime: 'text/vtt',  ext: 'vtt' },
+        TIMELINE:   { type: 'transcript', mime: 'application/json', ext: 'json' },
+      };
+      const m = mapping[zoomType];
+      if (!m) {
+        console.log(`[zoom-webhook] skip unknown recording type: ${zoomType}`);
+        continue;
+      }
+
+      const start = new Date(booking.start_time);
+      const dateStr = start.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+      const baseName = booking.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+      const recType = f.recording_type ? `_${f.recording_type}` : '';
+      const fileName = `${dateStr} ${baseName}${recType}.${m.ext}`;
+
+      try {
+        const upload = await googleDriveService.archiveRecordingFile(
+          booking,
+          f.download_url,
+          downloadToken,
+          {
+            fileType: m.type,
+            fileName,
+            mimeType: m.mime,
+            sizeBytes: f.file_size,
+          }
+        );
+        if (upload) uploaded.push({ name: fileName, url: upload.fileUrl });
+      } catch (err) {
+        console.error(`[zoom-webhook] archive failed for ${fileName}:`, err.message);
+      }
+    }
+
+    // แจ้ง user ผ่าน in-app notif
+    if (uploaded.length > 0) {
+      try {
+        await inAppNotif.create({
+          userId:  booking.user_id,
+          type:    'recording_archived',
+          title:   'บันทึกการประชุมพร้อมดาวน์โหลด',
+          message: `${booking.title} · เก็บไว้ใน Google Drive แล้ว ${uploaded.length} ไฟล์`,
+          bookingId: booking.id,
+          link:    `/my-bookings?bookingId=${booking.id}`,
+        });
+      } catch (e) { console.error('recording notif failed:', e.message); }
+
+      await auditService.log({
+        userId: booking.user_id, bookingId: booking.id,
+        action: 'recording_archived',
+        detail: { file_count: uploaded.length, files: uploaded.map(u => u.name) },
+      });
+    }
+
+    return { handled: true, event: 'recording.completed', uploaded: uploaded.length };
   }
 
   return { handled: false, event: event.event };

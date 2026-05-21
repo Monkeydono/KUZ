@@ -130,4 +130,38 @@ function verifyWebhookSignature(body, headers, secretToken) {
   return signature === headers['x-zm-signature'];
 }
 
-module.exports = { createMeeting, deleteMeeting, verifyWebhookSignature };
+// ดึง info ของ recording (เรียกใช้กรณี webhook payload ไม่ได้ส่ง recording_files มาครบ)
+// requires Zoom Cloud Recording feature (Pro plan ขึ้นไป)
+async function getMeetingRecordings(meetingId, creds = null) {
+  const token = await getZoomToken(creds);
+  try {
+    const res = await axios.get(
+      `https://api.zoom.us/v2/meetings/${meetingId}/recordings`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    return res.data; // { recording_files: [...], download_access_token: '...' }
+  } catch (err) {
+    console.error('[Zoom getMeetingRecordings]', err.response?.status, err.response?.data);
+    throw err;
+  }
+}
+
+// download recording file เป็น stream — caller pipe ไป upload Drive
+// webhook ส่ง download_token มาในแต่ละ event → ใช้เป็น Bearer แทน OAuth token
+async function downloadRecordingStream(downloadUrl, downloadToken) {
+  if (!downloadUrl || !downloadToken) {
+    throw new Error('downloadUrl + downloadToken required');
+  }
+  const res = await axios.get(downloadUrl, {
+    headers: { Authorization: `Bearer ${downloadToken}` },
+    responseType: 'stream',
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+  });
+  return res; // axios response with .data = stream
+}
+
+module.exports = {
+  createMeeting, deleteMeeting, verifyWebhookSignature,
+  getMeetingRecordings, downloadRecordingStream,
+};

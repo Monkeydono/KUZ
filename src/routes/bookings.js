@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bookingService = require('../services/bookingService');
 const roomService = require('../services/roomService');
+const googleDriveService = require('../services/googleDriveService');
 const pool = require('../../config/db');
 
 // GET /bookings/rooms — list ห้องที่ user role ปัจจุบันจองได้
@@ -104,6 +105,24 @@ router.delete('/:id', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// GET /bookings/:id/drive — ดึง list ของ Google Drive files ที่ผูกกับ booking
+router.get('/:id/drive', async (req, res, next) => {
+  try {
+    // ตรวจสิทธิ์: เป็นเจ้าของหรือ admin/staff เท่านั้น
+    const b = await pool.query(
+      `SELECT user_id FROM bookings WHERE id = $1`, [req.params.id]
+    );
+    if (b.rows.length === 0) return res.status(404).json({ error: 'ไม่พบการจอง' });
+    const isOwner = b.rows[0].user_id === req.user.id;
+    const isStaffOrAdmin = req.user.role === 'admin' || req.user.role === 'staff';
+    if (!isOwner && !isStaffOrAdmin) {
+      return res.status(403).json({ error: 'ไม่มีสิทธิ์ดู' });
+    }
+    const files = await googleDriveService.getBookingFiles(req.params.id);
+    res.json(files);
+  } catch (err) { next(err); }
 });
 
 router.get('/:id/join', async (req, res, next) => {

@@ -300,9 +300,9 @@ function Calendar() {
 
       {user && user.has_calendar === false && (
         <div style={s.calendarBanner}>
-          เพื่อให้ระบบเพิ่มการจองลง Google Calendar ของคุณอัตโนมัติ
+          เพื่อให้ระบบเพิ่มการจองลง Google Calendar + เก็บข้อมูลการประชุมใน Google Drive ของคุณอัตโนมัติ
           กรุณา <strong>ออกจากระบบและ login ใหม่</strong>
-          เพื่ออนุญาตสิทธิ์ Calendar (ครั้งเดียว)
+          เพื่ออนุญาตสิทธิ์ Calendar + Drive (ครั้งเดียว)
         </div>
       )}
       <div style={{ ...s.body, flexDirection: isMobile ? 'column' : 'row' }}>

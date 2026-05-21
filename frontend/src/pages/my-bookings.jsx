@@ -91,14 +91,20 @@ function MyBookings() {
     completed:        { text: 'เสร็จสิ้น',     color: '#666',    bg: '#f0f0f0' },
   }[status] || { text: status, color: '#888', bg: '#f5f5f5' })
 
+  // effective status — ถือว่า confirmed ที่ end_time ผ่านไปแล้ว = completed (กัน cron lag)
+  const effectiveStatus = (b) => {
+    if (b.status === 'confirmed' && new Date(b.end_time) < new Date()) return 'completed'
+    return b.status
+  }
+
   const stats = useMemo(() => ({
     total:     bookings.length,
-    confirmed: bookings.filter(b => b.status === 'confirmed').length,
-    completed: bookings.filter(b => b.status === 'completed').length,
-    cancelled: bookings.filter(b => b.status === 'cancelled').length,
+    confirmed: bookings.filter(b => effectiveStatus(b) === 'confirmed').length,
+    completed: bookings.filter(b => effectiveStatus(b) === 'completed').length,
+    cancelled: bookings.filter(b => effectiveStatus(b) === 'cancelled').length,
   }), [bookings])
 
-  const filtered = filter === 'all' ? bookings : bookings.filter(b => b.status === filter)
+  const filtered = filter === 'all' ? bookings : bookings.filter(b => effectiveStatus(b) === filter)
 
   const filters = [
     { key: 'all',       label: 'ทั้งหมด',     count: stats.total },
@@ -181,7 +187,7 @@ function MyBookings() {
 
         <div style={s.list}>
           {filtered.map(b => {
-            const st = statusLabel(b.status)
+            const st = statusLabel(effectiveStatus(b))
             const isPast = new Date(b.end_time) < new Date()
             const isFocus = highlightId === b.id
             return (
@@ -247,36 +253,101 @@ function MyBookings() {
                     </div>
                   </div>
 
-                  {b.status === 'confirmed' && !isPast && (
-                    <div style={s.cardBottom}>
-                      <button
-                        onClick={() => navigate(`/join/${b.id}`)}
-                        style={s.zoomBtn}
-                        className="ku-zoom-btn"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                          <rect x="3" y="6" width="14" height="12" rx="2" fill="white"/>
-                          <path d="M17 10l4-2v8l-4-2v-4z" fill="white"/>
-                        </svg>
-                        เข้าร่วม Zoom
-                      </button>
-                      {b.zoom_password && (
-                        <div style={s.passBox}>
-                          <span style={s.passLabel}>รหัส</span>
-                          <code style={s.passCode}>{b.zoom_password}</code>
-                        </div>
-                      )}
-                      {!b.is_co_host && (
-                        <button
-                          style={s.cancelBtn}
-                          className="ku-cancel"
-                          onClick={() => handleCancel(b)}
-                        >
-                          ยกเลิก
-                        </button>
-                      )}
-                    </div>
-                  )}
+                  {(() => {
+                    const isUpcoming = b.status === 'confirmed' && !isPast
+                    const hasDrive = !!b.drive_folder_url
+                    const recordings = b.drive_recordings || []
+                    const hasRecording = recordings.some(r => r.file_type === 'recording')
+                    const hasAnyAction = isUpcoming || hasDrive || recordings.length > 0
+                    if (!hasAnyAction) return null
+                    return (
+                      <div style={s.cardBottom}>
+                        {isUpcoming && (
+                          <>
+                            <button
+                              onClick={() => navigate(`/join/${b.id}`)}
+                              style={s.zoomBtn}
+                              className="ku-zoom-btn"
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="6" width="14" height="12" rx="2" fill="white"/>
+                                <path d="M17 10l4-2v8l-4-2v-4z" fill="white"/>
+                              </svg>
+                              เข้าร่วม Zoom
+                            </button>
+                            {b.zoom_password && (
+                              <div style={s.passBox}>
+                                <span style={s.passLabel}>รหัส</span>
+                                <code style={s.passCode}>{b.zoom_password}</code>
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {hasDrive && (
+                          <a
+                            href={b.drive_folder_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={s.driveBtn}
+                            className="ku-drive-btn"
+                            title="เปิดเอกสารประกอบการประชุมใน Google Drive"
+                          >
+                            View Document
+                          </a>
+                        )}
+
+                        {hasRecording
+                          ? recordings.filter(r => r.file_type === 'recording').map((rec, i) => (
+                              <a
+                                key={i}
+                                href={rec.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={s.downloadBtn}
+                                title={rec.name}
+                              >
+                                Download Recording
+                              </a>
+                            ))
+                          : (
+                              <span
+                                style={{ ...s.downloadBtn, ...s.downloadBtnDisabled }}
+                                title="ยังไม่มีไฟล์บันทึก (ต้องใช้ Zoom Pro plan)"
+                              >
+                                Download Recording
+                              </span>
+                            )
+                        }
+
+                        {recordings.filter(r => r.file_type !== 'recording').map((rec, i) => {
+                          const label = rec.file_type === 'chat' ? 'Chat log' : 'Transcript'
+                          return (
+                            <a
+                              key={`extra-${i}`}
+                              href={rec.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={s.secondaryBtn}
+                              title={rec.name}
+                            >
+                              {label}
+                            </a>
+                          )
+                        })}
+
+                        {isUpcoming && !b.is_co_host && (
+                          <button
+                            style={s.cancelBtn}
+                            className="ku-cancel"
+                            onClick={() => handleCancel(b)}
+                          >
+                            ยกเลิก
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </div>
               </div>
             )
@@ -492,6 +563,35 @@ const s = {
     marginLeft: 'auto', background: 'transparent',
     border: '1px solid #ffcdd2', color: '#c62828',
     padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 500,
+  },
+  driveBtn: {
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    background: '#e0f2fe', color: '#0369a1',
+    padding: '7px 14px', borderRadius: 8,
+    fontSize: 12, fontWeight: 600,
+    border: '1px solid #bae6fd',
+    textDecoration: 'none',
+  },
+  downloadBtn: {
+    display: 'inline-flex', alignItems: 'center',
+    background: '#1e40af', color: 'white',
+    padding: '7px 14px', borderRadius: 8,
+    fontSize: 12, fontWeight: 600,
+    border: '1px solid #1e40af',
+    textDecoration: 'none', cursor: 'pointer',
+  },
+  downloadBtnDisabled: {
+    background: '#e5e7eb', color: '#9ca3af',
+    border: '1px solid #e5e7eb',
+    cursor: 'not-allowed',
+  },
+  secondaryBtn: {
+    display: 'inline-flex', alignItems: 'center',
+    background: 'white', color: '#1e40af',
+    padding: '6px 12px', borderRadius: 8,
+    fontSize: 11, fontWeight: 600,
+    border: '1px solid #93c5fd',
+    textDecoration: 'none',
   },
   emptyBox: {
     textAlign: 'center', padding: '60px 24px',
