@@ -9,6 +9,9 @@ if (!process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET is not set in environment');
 }
 
+// running behind Nginx — trust 1 proxy so req.ip / X-Forwarded-For work for rate-limit
+app.set('trust proxy', 1);
+
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 app.use(cors({ origin: FRONTEND_URL, credentials: true }));
