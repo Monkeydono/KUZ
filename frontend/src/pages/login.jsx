@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import KUEmblem from '../components/KUEmblem'
 import { useIsMobile } from '../useIsMobile'
@@ -6,16 +6,24 @@ import { useIsMobile } from '../useIsMobile'
 function Login() {
   const navigate = useNavigate()
   const isMobile = useIsMobile()
+  const [error, setError] = useState('')
 
   useEffect(() => {
     const hash = window.location.hash.replace(/^#/, '')
-    if (!hash) return
-    const params = new URLSearchParams(hash)
-    const token = params.get('token')
-    if (token) {
-      localStorage.setItem('token', token)
+    if (hash) {
+      const params = new URLSearchParams(hash)
+      const token = params.get('token')
+      if (token) {
+        localStorage.setItem('token', token)
+        window.history.replaceState(null, '', window.location.pathname)
+        navigate('/calendar')
+        return
+      }
+    }
+    const query = new URLSearchParams(window.location.search)
+    if (query.get('error') === 'domain') {
+      setError('อีเมลนี้เข้าใช้งานไม่ได้ — กรุณาใช้บัญชี Google ของมหาวิทยาลัย (@ku.th หรือ @ku.ac.th) เท่านั้น')
       window.history.replaceState(null, '', window.location.pathname)
-      navigate('/calendar')
     }
   }, [navigate])
 
@@ -46,6 +54,16 @@ function Login() {
             ใช้บัญชี Google ของมหาวิทยาลัย<br />
             <strong style={s.strong}>(@ku.th หรือ @ku.ac.th)</strong> เพื่อเข้าใช้งาน
           </p>
+
+          {error && (
+            <div style={s.errorBox} role="alert">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
+                <circle cx="12" cy="12" r="10" stroke="#c62828" strokeWidth="2"/>
+                <path d="M12 7v6M12 16.5v.5" stroke="#c62828" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+              <span>{error}</span>
+            </div>
+          )}
 
           <button
             style={s.btn}
@@ -160,6 +178,12 @@ const s = {
     margin: '0 0 28px',
   },
   strong: { color: '#03A96B', fontWeight: 600 },
+  errorBox: {
+    display: 'flex', alignItems: 'flex-start', gap: 8,
+    background: '#fff0f0', border: '1px solid #ffcdd2', borderRadius: 10,
+    padding: '12px 14px', margin: '0 0 20px',
+    color: '#c62828', fontSize: 13, lineHeight: 1.5, textAlign: 'left',
+  },
   btn: {
     width: '100%', padding: '14px 0',
     background: 'linear-gradient(135deg, #03A96B 0%, #028152 100%)',

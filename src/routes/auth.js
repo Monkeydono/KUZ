@@ -83,7 +83,8 @@ router.get('/google/callback',
 );
 
 router.get('/failed', (req, res) => {
-  res.status(401).json({ error: 'กรุณาใช้ email @ku.th หรือ @ku.ac.th เท่านั้น' });
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  res.redirect(`${frontendUrl}/login?error=domain`);
 });
 
 const authenticate = require('../middleware/authenticate');
