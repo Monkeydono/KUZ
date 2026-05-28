@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /$
+Allow: /login
+Disallow: /admin
+Disallow: /calendar
+Disallow: /book
+Disallow: /bookings
+Disallow: /auth
+
+Sitemap: https://meet.ocs.ku.ac.th/sitemap.xml
