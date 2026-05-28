@@ -15,6 +15,8 @@ const MONTHS = ['มกราคม','กุมภาพันธ์','มีน
 
 function Calendar() {
   const { user, isAdmin } = useUser()
+  const role = user?.role || 'student'
+  const canPickPriorityRoom = role === 'admin' || role === 'priority'
   const isMobile = useIsMobile()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const today = new Date()
@@ -29,7 +31,7 @@ function Calendar() {
   const tiers = useMemo(() => {
     const map = new Map()
     for (const r of rooms) {
-      if (r.is_priority_only) continue  // ถ้ามีจริง user ทั่วไปไม่ต้องเห็นใน selector
+      if (r.is_priority_only && !canPickPriorityRoom) continue
       const t = map.get(r.capacity) || {
         capacity: r.capacity, total: 0, anyReady: false, anyZoomAccount: false,
       }
@@ -39,7 +41,7 @@ function Calendar() {
       map.set(r.capacity, t)
     }
     return Array.from(map.values()).sort((a, b) => a.capacity - b.capacity)
-  }, [rooms])
+  }, [rooms, canPickPriorityRoom])
 
   const [selectedCapacity, setSelectedCapacity] = useState(null)
   const selectedTier = tiers.find(t => t.capacity === selectedCapacity) || null

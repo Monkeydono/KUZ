@@ -12,7 +12,10 @@
       "Bash(node -c src/app.js)",
       "Bash(node -c src/server.js)",
       "Bash(npx esbuild *)",
-      "PowerShell(Push-Location frontend; npx esbuild src/components/Navbar.jsx --bundle --loader:.jsx=jsx --outfile=$env:TEMP/nav.js --log-level=error 2>&1 | Select-Object -First 30; Pop-Location)"
+      "PowerShell(Push-Location frontend; npx esbuild src/components/Navbar.jsx --bundle --loader:.jsx=jsx --outfile=$env:TEMP/nav.js --log-level=error 2>&1 | Select-Object -First 30; Pop-Location)",
+      "PowerShell(Get-Item \"$env:USERPROFILE\\\\OneDrive\\\\เดสก์ท็อป\\\\รายงานผลการปฏิบัติงาน-ครั้งที่6.docx\" | Select-Object Name, Length, LastWriteTime)",
+      "PowerShell(Test-Path \"$env:USERPROFILE\\\\OneDrive\\\\เดสก์ท็อป\\\\รายงานผลการปฏิบัติงาน-ครั้งที่6.docx\")",
+      "PowerShell($out = \"$env:USERPROFILE\\\\OneDrive\\\\เดสก์ท็อป\\\\รายงานผลการปฏิบัติงาน-ครั้งที่6.docx\"; node \"$env:TEMP\\\\kuz-report\\\\build.js\" $out)"
     ]
   }
 }
