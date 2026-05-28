@@ -1120,7 +1120,7 @@ function RoomsList() {
                   value={editing.capacity}
                   onChange={e => setEditing({ ...editing, capacity: parseInt(e.target.value, 10) })}
                 >
-                  <option value={100}>100 คน (Free / Basic)</option>
+                  <option value={100}>100 คน</option>
                   <option value={300}>300 คน</option>
                   <option value={500}>500 คน</option>
                   <option value={1000}>1000 คน</option>
