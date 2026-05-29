@@ -77,29 +77,15 @@ function CalendarRoute() {
 }
 
 // ปลายทางหลัง logout จาก KU ALL-Login (post_logout_redirect_uri ที่ลงทะเบียน = /logout)
+// clear token แล้วเด้งไปหน้า login เลย → พร้อม login ใหม่ทันที
 function Logout() {
   const navigate = useNavigate()
   useEffect(() => {
     localStorage.removeItem('token')
     localStorage.removeItem('ku_id_token')
-  }, [])
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', minHeight: '100vh',
-      alignItems: 'center', justifyContent: 'center', gap: 16, color: '#028152',
-    }}>
-      <div style={{ fontSize: 18, fontWeight: 600 }}>ออกจากระบบเรียบร้อยแล้ว</div>
-      <button
-        onClick={() => navigate('/login')}
-        style={{
-          padding: '12px 28px', background: '#03A96B', color: '#fff',
-          border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: 'pointer',
-        }}
-      >
-        กลับสู่หน้าเข้าสู่ระบบ
-      </button>
-    </div>
-  )
+    navigate('/login', { replace: true })
+  }, [navigate])
+  return null
 }
 
 function App() {
