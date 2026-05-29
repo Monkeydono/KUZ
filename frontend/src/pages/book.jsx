@@ -3,7 +3,6 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { AlertCircle, Check, Calendar, Clock, Users as UsersIcon } from 'lucide-react'
 import api from '../api'
 import { useUser } from '../useUser'
-import { useIsMobile } from '../useIsMobile'
 import Navbar from '../components/Navbar'
 
 const formatToDDMMYYYY = (yyyymmdd) => {
@@ -21,7 +20,6 @@ const parseDDMMYYYY = (str) => {
 
 function Book() {
   const { user, isAdmin } = useUser()
-  const isMobile = useIsMobile()
   const role = user?.role || 'student'
   const canPickPriorityRoom = role === 'admin' || role === 'priority'
   const [searchParams] = useSearchParams()
@@ -350,7 +348,7 @@ function Book() {
               </div>
             </div>
 
-            <div style={{ ...s.row, flexDirection: isMobile ? 'column' : 'row' }}>
+            <div style={{ ...s.row, flexDirection: 'column', gap: 0 }}>
               <div style={{ ...s.field, flex: 1, minWidth: 0 }}>
                 <label style={s.label}>เวลาเริ่ม <span style={s.req}>*</span></label>
                 <div style={s.dateWrap}>
