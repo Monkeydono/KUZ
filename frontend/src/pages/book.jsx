@@ -348,8 +348,8 @@ function Book() {
               </div>
             </div>
 
-            <div style={{ ...s.row, flexDirection: 'column', gap: 0 }}>
-              <div style={{ ...s.field, flex: 1, minWidth: 0 }}>
+            <div>
+              <div style={s.field}>
                 <label style={s.label}>เวลาเริ่ม <span style={s.req}>*</span></label>
                 <div style={s.dateWrap}>
                   <input
@@ -373,7 +373,7 @@ function Book() {
                   </button>
                 </div>
               </div>
-              <div style={{ ...s.field, flex: 1, minWidth: 0 }}>
+              <div style={s.field}>
                 <label style={s.label}>เวลาสิ้นสุด <span style={s.req}>*</span></label>
                 <div style={s.dateWrap}>
                   <input

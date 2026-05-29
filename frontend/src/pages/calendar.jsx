@@ -602,8 +602,8 @@ function Calendar() {
                 />
               </div>
 
-              <div style={s.row}>
-                <div style={{ ...s.field, flex: 1 }}>
+              <div>
+                <div style={s.field}>
                   <label style={s.label}>เวลาเริ่ม <span style={s.req}>*</span></label>
                   <input
                     style={s.input}
@@ -615,7 +615,7 @@ function Calendar() {
                     disabled={modalSuccess}
                   />
                 </div>
-                <div style={{ ...s.field, flex: 1 }}>
+                <div style={s.field}>
                   <label style={s.label}>เวลาสิ้นสุด <span style={s.req}>*</span></label>
                   <input
                     style={s.input}
@@ -1101,7 +1101,7 @@ const s = {
   input: {
     width: '100%', padding: '12px 14px',
     border: '1.5px solid #dde3dd', borderRadius: 10,
-    fontSize: 14, background: '#fff',
+    fontSize: 14, background: '#fff', boxSizing: 'border-box',
   },
   staticTime: {
     padding: '12px 14px', border: '1.5px solid #dde3dd', borderRadius: 10,
