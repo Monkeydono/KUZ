@@ -349,7 +349,7 @@ function Book() {
             </div>
 
             <div style={s.row}>
-              <div style={{ ...s.field, flex: 1 }}>
+              <div style={{ ...s.field, flex: 1, minWidth: 0 }}>
                 <label style={s.label}>เวลาเริ่ม <span style={s.req}>*</span></label>
                 <div style={s.dateWrap}>
                   <input
@@ -373,7 +373,7 @@ function Book() {
                   </button>
                 </div>
               </div>
-              <div style={{ ...s.field, flex: 1 }}>
+              <div style={{ ...s.field, flex: 1, minWidth: 0 }}>
                 <label style={s.label}>เวลาสิ้นสุด <span style={s.req}>*</span></label>
                 <div style={s.dateWrap}>
                   <input
@@ -604,7 +604,7 @@ const s = {
   input: {
     width: '100%', padding: '12px 14px',
     border: '1.5px solid #dde3dd', borderRadius: 10,
-    fontSize: 14, background: '#fff',
+    fontSize: 14, background: '#fff', boxSizing: 'border-box',
   },
   dateWrap: { position: 'relative' },
   dateBtn: {
