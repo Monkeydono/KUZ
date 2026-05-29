@@ -52,8 +52,8 @@ function KuLoginExchange() {
     api.post('/auth/kulogin/exchange', { code, state })
       .then(res => {
         localStorage.setItem('token', res.data.token)
-        window.history.replaceState(null, '', '/calendar')
-        navigate('/calendar', { replace: true })
+        // reload เต็มไปที่ /calendar (clean URL) — navigate path เดิมไม่ remount CalendarRoute
+        window.location.replace('/calendar')
       })
       .catch(() => navigate('/login?error=kulogin', { replace: true }))
   }, [navigate])
