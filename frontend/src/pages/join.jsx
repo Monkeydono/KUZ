@@ -100,9 +100,13 @@ function Join() {
           {state.status === 'ready' && (
             <>
               <div style={{ ...s.iconWrap, color: '#1FBA7C' }}><Video size={42} /></div>
-              <h2 style={s.heading}>กำลังพาเข้าห้อง...</h2>
+              <h2 style={s.heading}>
+                {state.data?.isHost ? 'กำลังเริ่มประชุม...' : 'กำลังพาเข้าห้อง...'}
+              </h2>
               <p style={s.sub}>{state.data?.title}</p>
-              <a href={state.data?.joinUrl} style={s.btn}>เข้าร่วม Zoom ทันที</a>
+              <a href={state.data?.joinUrl} style={s.btn}>
+                {state.data?.isHost ? 'เริ่มประชุม (เป็น host)' : 'เข้าร่วม Zoom ทันที'}
+              </a>
             </>
           )}
 

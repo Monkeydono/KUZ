@@ -802,9 +802,14 @@ const JOIN_GRACE_AFTER_END_MS = 5 * 60 * 1000;
 
 async function getJoinInfo(bookingId, requester) {
   const result = await pool.query(
-    `SELECT b.*, u.email AS owner_email
+    `SELECT b.*, u.email AS owner_email,
+            za.account_id   AS zoom_account_id_str,
+            za.client_id    AS zoom_client_id,
+            za.client_secret AS zoom_client_secret
        FROM bookings b
        JOIN users u ON u.id = b.user_id
+       LEFT JOIN rooms r ON r.id = b.room_id
+       LEFT JOIN zoom_accounts za ON za.id = r.zoom_account_id
       WHERE b.id = $1`,
     [bookingId]
   );
@@ -837,8 +842,27 @@ async function getJoinInfo(bookingId, requester) {
     throw { status: 410, message: 'หมดเวลาเข้าห้องแล้ว' };
   }
 
+  // เจ้าของ + admin → เริ่มประชุมเป็น host ด้วย start_url (fetch สด เพราะ ZAK token หมดอายุ ~2 ชม.)
+  // co-host/participant → join_url ปกติ
+  let joinUrl = booking.zoom_join_url;
+  let isHost = false;
+  if (isOwner || isAdmin) {
+    const creds = booking.zoom_account_id_str ? {
+      accountId:    booking.zoom_account_id_str,
+      clientId:     booking.zoom_client_id,
+      clientSecret: booking.zoom_client_secret,
+    } : null;
+    try {
+      const startUrl = await zoomService.getStartUrl(booking.zoom_meeting_id, creds);
+      if (startUrl) { joinUrl = startUrl; isHost = true; }
+    } catch (err) {
+      console.error('[getStartUrl] failed, fallback to join_url:', err.response?.data || err.message);
+    }
+  }
+
   return {
-    joinUrl:  booking.zoom_join_url,
+    joinUrl,
+    isHost,
     password: booking.zoom_password,
     title:    booking.title,
     endTime:  booking.end_time,

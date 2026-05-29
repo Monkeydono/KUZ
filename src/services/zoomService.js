@@ -119,6 +119,17 @@ async function deleteMeeting(meetingId, creds = null) {
   );
 }
 
+// ดึง start_url สด (มี ZAK token อายุสั้น ~2 ชม.) สำหรับให้เจ้าของเริ่มประชุมเป็น host
+// ต้อง fetch ตอนจะเริ่มจริง เพราะ start_url ตอนสร้าง meeting หมดอายุก่อนถึงเวลาประชุม
+async function getStartUrl(meetingId, creds = null) {
+  const token = await getZoomToken(creds);
+  const res = await axios.get(
+    `https://api.zoom.us/v2/meetings/${meetingId}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  return res.data.start_url;
+}
+
 // หา zoom_account ของ meeting จาก database (สำหรับ webhook ที่ส่ง meeting_id มา)
 // webhook signature verification — ใช้ HMAC SHA256 ของ payload + Zoom verification token
 function verifyWebhookSignature(body, headers, secretToken) {
@@ -162,6 +173,6 @@ async function downloadRecordingStream(downloadUrl, downloadToken) {
 }
 
 module.exports = {
-  createMeeting, deleteMeeting, verifyWebhookSignature,
+  createMeeting, deleteMeeting, getStartUrl, verifyWebhookSignature,
   getMeetingRecordings, downloadRecordingStream,
 };
