@@ -3,7 +3,9 @@ const router = express.Router();
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const pool = require('../../config/db');
+const kuLogin = require('../services/kuLoginService');
 require('dotenv').config();
 
 // ตั้งค่า Google OAuth Strategy
@@ -85,6 +87,76 @@ router.get('/google/callback',
 router.get('/failed', (req, res) => {
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
   res.redirect(`${frontendUrl}/login?error=domain`);
+});
+
+// ===== KU ALL-Login (OIDC / Keycloak) =====
+// redirect_uri ต้องตรงเป๊ะกับที่ลงทะเบียนกับ OCS
+// ใช้ KU_LOGIN_REDIRECT_URI = https://meet.ocs.ku.ac.th/auth/kulogin/callback
+// PKCE verifier เก็บชั่วคราว keyed by state (single PM2 instance, TTL 5 นาที)
+const kuFlows = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [s, v] of kuFlows) if (now - v.at > 5 * 60 * 1000) kuFlows.delete(s);
+}, 60 * 1000).unref();
+
+router.get('/kulogin', (req, res) => {
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  if (!kuLogin.isConfigured()) {
+    return res.redirect(`${frontendUrl}/login?error=kulogin_unconfigured`);
+  }
+  const state = crypto.randomBytes(16).toString('hex');
+  const { verifier, challenge } = kuLogin.generatePKCE();
+  kuFlows.set(state, { verifier, at: Date.now() });
+  res.redirect(kuLogin.buildAuthorizeUrl({ state, codeChallenge: challenge }));
+});
+
+// redirect_uri ที่ลงทะเบียน = /calendar (หน้า React) → frontend ส่ง code+state มา exchange ที่นี่
+// คืน JWT เป็น JSON (ไม่ redirect) เพราะ caller คือ frontend ผ่าน axios
+router.post('/kulogin/exchange', async (req, res) => {
+  try {
+    const { code, state } = req.body;
+    const flow = state && kuFlows.get(state);
+    if (!code || !flow) return res.status(400).json({ error: 'invalid_state' });
+    kuFlows.delete(state);
+
+    const tokens = await kuLogin.exchangeCode(code, flow.verifier);
+    const info = await kuLogin.fetchUserInfo(tokens.access_token);
+
+    // ใช้ google-mail (@ku.th) เป็น key หลัก → user เดียวกับ Google login
+    const email = (info['google-mail'] || info.mail || info.email || '').toLowerCase();
+    if (!email.endsWith('@ku.th') && !email.endsWith('@ku.ac.th')) {
+      return res.status(403).json({ error: 'domain' });
+    }
+
+    const name = info.thainame || info.cn || info.name || email;
+    const typePerson = info['type-person'] != null ? String(info['type-person']) : null;
+
+    const adminEmails = (process.env.ADMIN_EMAILS || '')
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const role = adminEmails.includes(email) ? 'admin' : 'student';
+
+    const result = await pool.query(
+      `INSERT INTO users (email, name, role, ku_type_person)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (email) DO UPDATE SET
+         name = EXCLUDED.name,
+         role = EXCLUDED.role,
+         ku_type_person = EXCLUDED.ku_type_person
+       RETURNING *`,
+      [email, name, role, typePerson]
+    );
+    const user = result.rows[0];
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    res.json({ token });
+  } catch (err) {
+    console.error('[kulogin exchange]', err.response?.data || err.message);
+    res.status(500).json({ error: 'kulogin_failed' });
+  }
 });
 
 const authenticate = require('../middleware/authenticate');

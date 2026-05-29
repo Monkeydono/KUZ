@@ -21,10 +21,15 @@ function Login() {
       }
     }
     const query = new URLSearchParams(window.location.search)
-    if (query.get('error') === 'domain') {
+    const err = query.get('error')
+    if (err === 'domain') {
       setError('อีเมลนี้เข้าใช้งานไม่ได้ — กรุณาใช้บัญชี Google ของมหาวิทยาลัย (@ku.th หรือ @ku.ac.th) เท่านั้น')
-      window.history.replaceState(null, '', window.location.pathname)
+    } else if (err === 'kulogin') {
+      setError('เข้าสู่ระบบผ่าน KU ALL-Login ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
+    } else if (err === 'kulogin_unconfigured') {
+      setError('KU ALL-Login ยังไม่เปิดใช้งาน (อยู่ระหว่างรอ credential จากสำนักบริการคอมพิวเตอร์)')
     }
+    if (err) window.history.replaceState(null, '', window.location.pathname)
   }, [navigate])
 
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3000'
@@ -79,6 +84,14 @@ function Login() {
             <span>เข้าสู่ระบบด้วย Google</span>
           </button>
 
+          <button
+            style={s.btnKU}
+            className="ku-alllogin-btn"
+            onClick={() => window.location.href = `${apiBase}/auth/kulogin`}
+          >
+            <span>เข้าสู่ระบบด้วย KU ALL-Login</span>
+          </button>
+
           <div style={s.divider}>
             <div style={s.dividerLine} />
             <span style={s.dividerText}>เฉพาะบุคลากร / นิสิต</span>
@@ -107,6 +120,17 @@ function Login() {
           background: linear-gradient(135deg, #1FBA7C 0%, #028152 100%) !important;
         }
         .ku-google-btn:active {
+          transform: translateY(0);
+        }
+        .ku-alllogin-btn {
+          transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease), background 0.2s var(--ease) !important;
+        }
+        .ku-alllogin-btn:hover {
+          transform: translateY(-1px);
+          background: #f0f9f4 !important;
+          box-shadow: 0 6px 16px rgba(1, 74, 50, 0.15) !important;
+        }
+        .ku-alllogin-btn:active {
           transform: translateY(0);
         }
       `}</style>
@@ -190,6 +214,12 @@ const s = {
     color: 'white', borderRadius: 10, fontSize: 14, fontWeight: 600,
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
     boxShadow: '0 4px 12px rgba(1, 74, 50, 0.2)',
+  },
+  btnKU: {
+    width: '100%', padding: '14px 0', marginTop: 12,
+    background: '#fff', color: '#028152',
+    border: '1.5px solid #03A96B', borderRadius: 10, fontSize: 14, fontWeight: 600,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
   },
   divider: {
     display: 'flex', alignItems: 'center', gap: 12, margin: '24px 0 16px',
