@@ -483,7 +483,7 @@ function Bookings({ isAdmin, initialStatus = '', focusBookingId = null }) {
                             marginTop: 6, fontSize: 11, color: '#555',
                             background: '#fafbfa', padding: '4px 8px', borderRadius: 6,
                             border: '1px solid #e6ebe6',
-                            maxWidth: 280, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                            maxWidth: 280, whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
                           }}
                           title={b.notes}
                         >
@@ -1630,12 +1630,14 @@ const s = {
     display: 'flex', gap: 8, marginBottom: 20,
     background: 'white', padding: 6, borderRadius: 12,
     border: '1px solid #e1e7e1', width: 'fit-content',
+    maxWidth: '100%', overflowX: 'auto',
   },
   tabBtn: {
     display: 'flex', alignItems: 'center', gap: 6,
     padding: '8px 14px', borderRadius: 8,
     background: 'transparent', color: '#666', border: 'none',
     fontSize: 13, fontWeight: 500, cursor: 'pointer',
+    whiteSpace: 'nowrap', flexShrink: 0,
   },
   tabBtnActive: {
     background: 'linear-gradient(135deg, #03A96B 0%, #1FBA7C 100%)',
@@ -1688,7 +1690,7 @@ const s = {
     border: '1px solid #e1e7e1', overflow: 'auto',
     maxWidth: '100%',
   },
-  table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
+  table: { width: '100%', minWidth: 600, borderCollapse: 'collapse', fontSize: 13 },
   th: {
     textAlign: 'left', padding: '10px 14px', fontSize: 11,
     color: '#888', fontWeight: 600, textTransform: 'uppercase',
