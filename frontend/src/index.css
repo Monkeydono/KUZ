@@ -96,6 +96,13 @@ input[type='email'] {
   transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
 
+/* iOS render time/date control สูงกว่า text — normalize ให้สูงเท่ากล่อง text input */
+input[type='time'],
+input[type='date'] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 input:focus {
   outline: none;
   border-color: var(--ku-green-600) !important;
