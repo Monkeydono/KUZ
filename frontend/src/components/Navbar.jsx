@@ -27,9 +27,21 @@ function Navbar() {
   const isActive = (path) => location.pathname === path
 
   const doLogout = () => {
+    const kuIdToken = localStorage.getItem('ku_id_token')
     localStorage.removeItem('token')
+    localStorage.removeItem('ku_id_token')
     setShowLogout(false)
-    navigate('/login')
+    // login ผ่าน KU ALL-Login → kill SSO session ที่ END_SESSION_ENDPOINT (เงื่อนไขบังคับของ OCS)
+    if (kuIdToken) {
+      const params = new URLSearchParams({
+        id_token_hint: kuIdToken,
+        post_logout_redirect_uri: `${window.location.origin}/logout`,
+      })
+      window.location.href =
+        `https://alllogin.ku.ac.th/realms/KU-Alllogin/protocol/openid-connect/logout?${params.toString()}`
+    } else {
+      navigate('/login')
+    }
   }
 
   const links = [

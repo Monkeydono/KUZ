@@ -52,6 +52,8 @@ function KuLoginExchange() {
     api.post('/auth/kulogin/exchange', { code, state })
       .then(res => {
         localStorage.setItem('token', res.data.token)
+        // เก็บ id_token ไว้ใช้เป็น id_token_hint ตอน logout SSO
+        if (res.data.idToken) localStorage.setItem('ku_id_token', res.data.idToken)
         // reload เต็มไปที่ /calendar (clean URL) — navigate path เดิมไม่ remount CalendarRoute
         window.location.replace('/calendar')
       })
@@ -74,11 +76,38 @@ function CalendarRoute() {
   return <PrivateRoute><Calendar /></PrivateRoute>
 }
 
+// ปลายทางหลัง logout จาก KU ALL-Login (post_logout_redirect_uri ที่ลงทะเบียน = /logout)
+function Logout() {
+  const navigate = useNavigate()
+  useEffect(() => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('ku_id_token')
+  }, [])
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', minHeight: '100vh',
+      alignItems: 'center', justifyContent: 'center', gap: 16, color: '#028152',
+    }}>
+      <div style={{ fontSize: 18, fontWeight: 600 }}>ออกจากระบบเรียบร้อยแล้ว</div>
+      <button
+        onClick={() => navigate('/login')}
+        style={{
+          padding: '12px 28px', background: '#03A96B', color: '#fff',
+          border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+        }}
+      >
+        กลับสู่หน้าเข้าสู่ระบบ
+      </button>
+    </div>
+  )
+}
+
 function App() {
   return (
     <Routes>
       <Route path="/" element={<TokenHandler />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/logout" element={<Logout />} />
       <Route path="/calendar" element={<CalendarRoute />} />
       <Route path="/book" element={<PrivateRoute><Book /></PrivateRoute>} />
       <Route path="/my-bookings" element={<PrivateRoute><MyBookings /></PrivateRoute>} />

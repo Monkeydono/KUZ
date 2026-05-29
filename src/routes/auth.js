@@ -152,7 +152,8 @@ router.post('/kulogin/exchange', async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
-    res.json({ token });
+    // ส่ง id_token กลับด้วย → frontend ใช้เป็น id_token_hint ตอน logout SSO
+    res.json({ token, idToken: tokens.id_token || null });
   } catch (err) {
     console.error('[kulogin exchange]', err.response?.data || err.message);
     res.status(500).json({ error: 'kulogin_failed' });
