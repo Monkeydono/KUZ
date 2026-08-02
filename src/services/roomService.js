@@ -9,7 +9,8 @@ async function getRoomWithCreds(roomId) {
             r.zoom_account_id,
             za.account_id   AS zoom_account_id_str,
             za.client_id    AS zoom_client_id,
-            za.client_secret AS zoom_client_secret
+            za.client_secret AS zoom_client_secret,
+            za.zoom_user_id AS zoom_user_id
        FROM rooms r
        LEFT JOIN zoom_accounts za ON za.id = r.zoom_account_id
       WHERE r.id = $1`,
@@ -27,6 +28,7 @@ async function getRoomWithCreds(roomId) {
       accountId:    row.zoom_account_id_str,
       clientId:     row.zoom_client_id,
       clientSecret: row.zoom_client_secret,
+      zoomUserId:   row.zoom_user_id,
     } : null,
   };
 }

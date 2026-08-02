@@ -875,7 +875,8 @@ async function approveBooking(bookingId, approverId) {
     `SELECT b.*, r.capacity AS room_capacity, r.name AS room_name,
             za.account_id   AS zoom_account_id_str,
             za.client_id    AS zoom_client_id,
-            za.client_secret AS zoom_client_secret
+            za.client_secret AS zoom_client_secret,
+            za.zoom_user_id AS zoom_host_user_id
        FROM bookings b
        LEFT JOIN rooms r ON r.id = b.room_id
        LEFT JOIN zoom_accounts za ON za.id = r.zoom_account_id
@@ -892,6 +893,7 @@ async function approveBooking(bookingId, approverId) {
     accountId:    booking.zoom_account_id_str,
     clientId:     booking.zoom_client_id,
     clientSecret: booking.zoom_client_secret,
+    zoomUserId:   booking.zoom_host_user_id,
   } : null;
 
   const duration = (new Date(booking.end_time) - new Date(booking.start_time)) / 60000;
@@ -1099,7 +1101,7 @@ async function reassignRoom(bookingId, newRoomId, adminId) {
   // ถ้า zoom_account ใหม่ต่างกับเดิม + booking มี meeting อยู่แล้ว → สร้าง meeting ใหม่ก่อน
   if (zoomAccountChanged && b.zoom_meeting_id && b.status === 'confirmed') {
     const newRoomCreds = await pool.query(
-      `SELECT za.account_id, za.client_id, za.client_secret
+      `SELECT za.account_id, za.client_id, za.client_secret, za.zoom_user_id
          FROM rooms r JOIN zoom_accounts za ON za.id = r.zoom_account_id
         WHERE r.id = $1`,
       [newRoomId]
@@ -1111,6 +1113,7 @@ async function reassignRoom(bookingId, newRoomId, adminId) {
       accountId:    newRoomCreds.rows[0].account_id,
       clientId:     newRoomCreds.rows[0].client_id,
       clientSecret: newRoomCreds.rows[0].client_secret,
+      zoomUserId:   newRoomCreds.rows[0].zoom_user_id,
     } : null;
     const duration = (new Date(b.end_time) - new Date(b.start_time)) / 60000;
     try {

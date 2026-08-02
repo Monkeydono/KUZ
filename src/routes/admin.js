@@ -332,10 +332,27 @@ router.delete('/rooms/:id', requireAdmin, async (req, res, next) => {
 // ========= Zoom Accounts =========
 // security note: client_secret ถูก return เฉพาะตอน create (เพื่อยืนยัน) — list ปกติจะ mask
 
+// normalize zoom_user_id — lowercase เสมอเพื่อให้ unique index (account_id, zoom_user_id) ดักซ้ำได้จริง
+// ค่าว่าง → NULL = ใช้ /users/me (owner ของ S2S app)
+function normalizeZoomUserId(v) {
+  if (v === undefined) return undefined;
+  const t = (v || '').trim().toLowerCase();
+  return t.length > 0 ? t : null;
+}
+
+// แปลง error ของ unique index uniq_zoom_accounts_account_user เป็นข้อความที่อ่านรู้เรื่อง
+function zoomAccountConflict(err) {
+  if (err.code !== '23505') return null;
+  if (err.constraint === 'uniq_zoom_accounts_account_user') {
+    return 'มี account row อื่นที่ใช้ Zoom user คนนี้อยู่แล้ว — host ซ้ำจะทำให้จองทับกันเองได้';
+  }
+  return 'label นี้มีอยู่แล้ว';
+}
+
 router.get('/zoom-accounts', requireAdmin, async (req, res, next) => {
   try {
     const r = await pool.query(
-      `SELECT id, label, account_id, client_id, max_attendees,
+      `SELECT id, label, account_id, client_id, max_attendees, zoom_user_id,
               ('***' || RIGHT(client_secret, 4)) AS client_secret_masked,
               created_at, updated_at,
               (SELECT COUNT(*) FROM rooms WHERE zoom_account_id = zoom_accounts.id) AS room_count
@@ -346,9 +363,46 @@ router.get('/zoom-accounts', requireAdmin, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /admin/zoom-accounts/:id/users — ดึงรายชื่อ user ใน Zoom account นี้
+// ใช้ตอน admin ตั้งค่าว่า row ไหน host ด้วย licensed user คนไหน
+router.get('/zoom-accounts/:id/users', requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT account_id, client_id, client_secret FROM zoom_accounts WHERE id = $1`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบ zoom account' });
+    const row = r.rows[0];
+    try {
+      const users = await zoomService.listUsers({
+        accountId:    row.account_id,
+        clientId:     row.client_id,
+        clientSecret: row.client_secret,
+      });
+      // row อื่นที่จองคนเหล่านี้ไปแล้ว — frontend ใช้กันเลือกซ้ำ
+      const taken = await pool.query(
+        `SELECT zoom_user_id, label FROM zoom_accounts
+          WHERE account_id = $1 AND zoom_user_id IS NOT NULL AND id != $2`,
+        [row.account_id, req.params.id]
+      );
+      const takenMap = {};
+      for (const t of taken.rows) takenMap[t.zoom_user_id] = t.label;
+      res.json(users.map(u => ({
+        ...u,
+        taken_by: takenMap[u.email?.toLowerCase()] || takenMap[u.id?.toLowerCase()] || null,
+      })));
+    } catch (err) {
+      res.status(502).json({
+        error: err.response?.data?.message || err.message,
+        hint: 'ตรวจว่า S2S app มี scope user:read:list_users:admin',
+      });
+    }
+  } catch (err) { next(err); }
+});
+
 router.post('/zoom-accounts', requireAdmin, async (req, res, next) => {
   try {
-    const { label, account_id, client_id, client_secret, max_attendees } = req.body;
+    const { label, account_id, client_id, client_secret, max_attendees, zoom_user_id } = req.body;
     if (!label || !account_id || !client_id || !client_secret) {
       return res.status(400).json({ error: 'ต้องระบุ label, account_id, client_id, client_secret' });
     }
@@ -357,25 +411,27 @@ router.post('/zoom-accounts', requireAdmin, async (req, res, next) => {
       return res.status(400).json({ error: 'max_attendees ต้องเป็นจำนวนเต็ม 1-10000 (license limit)' });
     }
     const r = await pool.query(
-      `INSERT INTO zoom_accounts (label, account_id, client_id, client_secret, max_attendees)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, label, account_id, client_id, max_attendees, created_at`,
-      [label.trim(), account_id.trim(), client_id.trim(), client_secret, maxAtt]
+      `INSERT INTO zoom_accounts (label, account_id, client_id, client_secret, max_attendees, zoom_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, label, account_id, client_id, max_attendees, zoom_user_id, created_at`,
+      [label.trim(), account_id.trim(), client_id.trim(), client_secret, maxAtt,
+       normalizeZoomUserId(zoom_user_id) ?? null]
     );
     await auditService.log({
       userId: req.user.id, action: 'zoom_account_created',
-      detail: { id: r.rows[0].id, label, max_attendees: maxAtt },
+      detail: { id: r.rows[0].id, label, max_attendees: maxAtt, zoom_user_id: r.rows[0].zoom_user_id },
     });
     res.status(201).json(r.rows[0]);
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'label นี้มีอยู่แล้ว' });
+    const conflict = zoomAccountConflict(err);
+    if (conflict) return res.status(409).json({ error: conflict });
     next(err);
   }
 });
 
 router.patch('/zoom-accounts/:id', requireAdmin, async (req, res, next) => {
   try {
-    const { label, account_id, client_id, client_secret, max_attendees } = req.body;
+    const { label, account_id, client_id, client_secret, max_attendees, zoom_user_id } = req.body;
     const fields = [];
     const params = [];
     let i = 1;
@@ -383,6 +439,7 @@ router.patch('/zoom-accounts/:id', requireAdmin, async (req, res, next) => {
     if (account_id !== undefined)    { fields.push(`account_id = $${i++}`);    params.push(account_id.trim()); }
     if (client_id !== undefined)     { fields.push(`client_id = $${i++}`);     params.push(client_id.trim()); }
     if (client_secret !== undefined) { fields.push(`client_secret = $${i++}`); params.push(client_secret); }
+    if (zoom_user_id !== undefined)  { fields.push(`zoom_user_id = $${i++}`);  params.push(normalizeZoomUserId(zoom_user_id)); }
     if (max_attendees !== undefined) {
       const m = parseInt(max_attendees, 10);
       if (!m || m < 1 || m > 10000) {
@@ -406,7 +463,7 @@ router.patch('/zoom-accounts/:id', requireAdmin, async (req, res, next) => {
     params.push(req.params.id);
     const r = await pool.query(
       `UPDATE zoom_accounts SET ${fields.join(', ')} WHERE id = $${i}
-       RETURNING id, label, account_id, client_id, max_attendees, updated_at`,
+       RETURNING id, label, account_id, client_id, max_attendees, zoom_user_id, updated_at`,
       params
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบ zoom account' });
@@ -415,18 +472,29 @@ router.patch('/zoom-accounts/:id', requireAdmin, async (req, res, next) => {
       detail: { id: req.params.id, changed: Object.keys(req.body) },
     });
     res.json(r.rows[0]);
-  } catch (err) { next(err); }
+  } catch (err) {
+    const conflict = zoomAccountConflict(err);
+    if (conflict) return res.status(409).json({ error: conflict });
+    next(err);
+  }
 });
 
 // health check: ทดสอบ token refresh ของ Zoom account
 router.get('/zoom-accounts/:id/health', requireAdmin, async (req, res, next) => {
   try {
     const r = await pool.query(
-      `SELECT account_id, client_id, client_secret FROM zoom_accounts WHERE id = $1`,
+      `SELECT account_id, client_id, client_secret, zoom_user_id FROM zoom_accounts WHERE id = $1`,
       [req.params.id]
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'ไม่พบ zoom account' });
     const row = r.rows[0];
+    // ทดสอบใต้ host คนเดียวกับที่ใช้จองจริง — ถ้า zoom_user_id ผิดหรือไม่ใช่ licensed จะ fail ตรงนี้
+    const creds = {
+      accountId:    row.account_id,
+      clientId:     row.client_id,
+      clientSecret: row.client_secret,
+      zoomUserId:   row.zoom_user_id,
+    };
     try {
       // ลอง getZoomToken ใน path ที่ไม่ cache (เรียกผ่าน createMeeting จะ cache)
       // ใช้ axios call trực tiếp ผ่าน zoomService internal — ที่นี่ create-then-delete
@@ -434,19 +502,14 @@ router.get('/zoom-accounts/:id/health', requireAdmin, async (req, res, next) => 
         title: '[KUZ health check] — ลบทันที',
         startTime: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         durationMinutes: 1,
-        creds: {
-          accountId:    row.account_id,
-          clientId:     row.client_id,
-          clientSecret: row.client_secret,
-        },
+        creds,
       });
       // cleanup ทันที
-      try { await zoomService.deleteMeeting(test.meetingId, {
-        accountId:    row.account_id,
-        clientId:     row.client_id,
-        clientSecret: row.client_secret,
-      }); } catch (e) {}
-      res.json({ ok: true, message: 'Token refresh + Create meeting ผ่าน' });
+      try { await zoomService.deleteMeeting(test.meetingId, creds); } catch (e) {}
+      res.json({
+        ok: true,
+        message: `Token refresh + Create meeting ผ่าน (host: ${row.zoom_user_id || 'owner /users/me'})`,
+      });
     } catch (err) {
       res.json({
         ok: false,

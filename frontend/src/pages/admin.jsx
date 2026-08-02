@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Download, Activity, Building2, Video, Plus, Edit3, Check, Move } from 'lucide-react'
+import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Download, Activity, Building2, Video, Plus, Edit3, Check, Move, Copy } from 'lucide-react'
 import api from '../api'
 import Navbar from '../components/Navbar'
 import { useUser } from '../useUser'
@@ -1200,19 +1200,44 @@ function ZoomAccountsList() {
 
   const [healthMap, setHealthMap] = useState({}) // id → {ok, msg, loading}
 
+  // รายชื่อ user ใน Zoom account — ใช้เลือก host แทนการพิมพ์ email เอง
+  const [hostUsers, setHostUsers] = useState(null) // null = ยังไม่โหลด
+  const [hostLoading, setHostLoading] = useState(false)
+
   const openNew = () => {
-    setError('')
-    setEditing({ label: '', account_id: '', client_id: '', client_secret: '', max_attendees: 300 })
+    setError(''); setHostUsers(null)
+    setEditing({ label: '', account_id: '', client_id: '', client_secret: '', max_attendees: 300, zoom_user_id: '' })
   }
   const openEdit = (z) => {
-    setError('')
+    setError(''); setHostUsers(null)
     setEditing({
       id: z.id, label: z.label, account_id: z.account_id, client_id: z.client_id,
       client_secret: '',
       max_attendees: z.max_attendees || 300,
+      zoom_user_id: z.zoom_user_id || '',
     })
   }
-  const close = () => { if (!saving) { setEditing(null); setError('') } }
+  // copy creds ของ row เดิมไปสร้าง row ใหม่ — ใช้ตอนกระจาย license หลายใบใน account เดียวกัน
+  // client_secret copy กลับมาไม่ได้ (ถูก mask) → ต้องกรอกใหม่
+  const openClone = (z) => {
+    setError(''); setHostUsers(null)
+    setEditing({
+      label: `${z.label} #2`, account_id: z.account_id, client_id: z.client_id,
+      client_secret: '', max_attendees: z.max_attendees || 300, zoom_user_id: '',
+    })
+  }
+  const loadHostUsers = async () => {
+    if (!editing?.id) return
+    setHostLoading(true)
+    try {
+      const r = await api.get(`/admin/zoom-accounts/${editing.id}/users`)
+      setHostUsers(r.data)
+    } catch (err) {
+      setError(err.response?.data?.error || 'ดึงรายชื่อ user ไม่สำเร็จ')
+      setHostUsers([])
+    } finally { setHostLoading(false) }
+  }
+  const close = () => { if (!saving) { setEditing(null); setError(''); setHostUsers(null) } }
 
   const save = async () => {
     setError('')
@@ -1231,6 +1256,7 @@ function ZoomAccountsList() {
         account_id: editing.account_id.trim(),
         client_id: editing.client_id.trim(),
         max_attendees: m,
+        zoom_user_id: (editing.zoom_user_id || '').trim(),
       }
       if (editing.client_secret) body.client_secret = editing.client_secret
       if (editing.id) {
@@ -1290,6 +1316,7 @@ function ZoomAccountsList() {
             <tr>
               <th style={s.th}>Label</th>
               <th style={s.th}>Account ID</th>
+              <th style={s.th}>Host (licensed user)</th>
               <th style={s.th}>Max attendees</th>
               <th style={s.th}>Secret</th>
               <th style={s.th}>ห้องที่ใช้</th>
@@ -1304,6 +1331,11 @@ function ZoomAccountsList() {
                 <tr key={z.id}>
                   <td style={s.td}><strong>{z.label}</strong></td>
                   <td style={{ ...s.td, fontSize: 11, fontFamily: 'monospace' }}>{z.account_id}</td>
+                  <td style={{ ...s.td, fontSize: 11 }}>
+                    {z.zoom_user_id
+                      ? <span style={{ fontFamily: 'monospace' }}>{z.zoom_user_id}</span>
+                      : <span style={{ color: '#999' }}>owner (/users/me)</span>}
+                  </td>
                   <td style={s.td}>{z.max_attendees} คน</td>
                   <td style={{ ...s.td, fontSize: 11, fontFamily: 'monospace' }}>{z.client_secret_masked}</td>
                   <td style={s.td}>{z.room_count}</td>
@@ -1335,6 +1367,13 @@ function ZoomAccountsList() {
                       <Edit3 size={14} />
                     </button>
                     <button
+                      style={{ ...s.iconBtn, marginLeft: 6 }}
+                      onClick={() => openClone(z)}
+                      title="สร้าง row ใหม่จาก creds ชุดนี้ (สำหรับ license ใบถัดไป)"
+                    >
+                      <Copy size={14} />
+                    </button>
+                    <button
                       style={{ ...s.iconBtn, marginLeft: 6, color: '#c62828' }}
                       onClick={() => del(z)}
                       title="ลบ"
@@ -1346,7 +1385,7 @@ function ZoomAccountsList() {
               )
             })}
             {items.length === 0 && (
-              <tr><td colSpan={7} style={s.emptyRow}>ยังไม่มี Zoom account</td></tr>
+              <tr><td colSpan={8} style={s.emptyRow}>ยังไม่มี Zoom account</td></tr>
             )}
           </tbody>
         </table>
@@ -1378,6 +1417,49 @@ function ZoomAccountsList() {
                   />
                 </div>
               ))}
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#333' }}>
+                    Host — licensed user ที่จะเป็นเจ้าของ meeting
+                  </label>
+                  {editing.id && (
+                    <button
+                      style={{ ...s.iconBtn, fontSize: 11, padding: '3px 8px', width: 'auto' }}
+                      onClick={loadHostUsers}
+                      disabled={hostLoading}
+                    >{hostLoading ? 'กำลังโหลด...' : 'โหลดรายชื่อ'}</button>
+                  )}
+                </div>
+                {hostUsers && hostUsers.length > 0 ? (
+                  <select
+                    style={{ ...s.select, width: '100%' }}
+                    value={editing.zoom_user_id || ''}
+                    onChange={e => setEditing({ ...editing, zoom_user_id: e.target.value })}
+                  >
+                    <option value="">— owner ของ S2S app (/users/me) —</option>
+                    {hostUsers.map(u => (
+                      <option key={u.id} value={u.email} disabled={!u.licensed || !!u.taken_by}>
+                        {u.email} · {u.name}
+                        {!u.licensed ? ' (Basic — ใช้ไม่ได้)' : ''}
+                        {u.taken_by ? ` (ใช้อยู่ใน "${u.taken_by}")` : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    style={{ ...s.searchInput, paddingLeft: 12 }}
+                    type="text"
+                    placeholder="เว้นว่าง = ใช้ owner ของ S2S app"
+                    value={editing.zoom_user_id || ''}
+                    onChange={e => setEditing({ ...editing, zoom_user_id: e.target.value })}
+                  />
+                )}
+                <div style={{ fontSize: 11, color: '#888', marginTop: 5, lineHeight: 1.5 }}>
+                  1 licensed user = 1 row = จองพร้อมกันได้ 1 ห้อง —
+                  ถ้ามีหลาย license ให้กดปุ่ม copy ในตารางเพื่อสร้าง row เพิ่มแล้วเลือก host คนละคน
+                  {!editing.id && ' (บันทึกก่อนถึงจะโหลดรายชื่อจาก Zoom ได้)'}
+                </div>
+              </div>
               <div style={{ marginBottom: 12 }}>
                 <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#333', marginBottom: 6 }}>
                   Max attendees (license limit ของ plan นี้)

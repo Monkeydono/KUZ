@@ -41,6 +41,14 @@ async function getZoomToken(creds = null) {
   return response.data.access_token;
 }
 
+// meeting ถูกสร้างใต้ user คนไหน — creds.zoomUserId (email หรือ userId) = licensed user เจาะจง
+// ไม่ระบุ = 'me' = owner ของ S2S app (พฤติกรรมเดิม)
+// การกระจาย host ข้ามหลาย licensed user คือสิ่งที่ทำให้ใช้ license ได้ครบทุกใบพร้อมกัน
+function meetingsEndpoint(creds) {
+  const who = creds?.zoomUserId ? encodeURIComponent(creds.zoomUserId) : 'me';
+  return `https://api.zoom.us/v2/users/${who}/meetings`;
+}
+
 async function createMeeting({ title, startTime, durationMinutes, creds = null, coHostEmails = [] }) {
   const token = await getZoomToken(creds);
 
@@ -66,8 +74,9 @@ async function createMeeting({ title, startTime, durationMinutes, creds = null, 
     settings,
   };
 
+  const endpoint = meetingsEndpoint(creds);
   const tryCreate = async (payload) => axios.post(
-    'https://api.zoom.us/v2/users/me/meetings',
+    endpoint,
     payload,
     { headers: { Authorization: `Bearer ${token}` } }
   );
@@ -172,7 +181,25 @@ async function downloadRecordingStream(downloadUrl, downloadToken) {
   return res; // axios response with .data = stream
 }
 
+// list user ใน Zoom account — admin ใช้เลือกว่า zoom_accounts row นี้จะ host ด้วยใคร
+// type: 1=Basic, 2=Licensed, 3=On-prem — เฉพาะ Licensed ที่สร้าง meeting เกิน 40 นาทีได้
+// ต้องมี scope user:read:list_users:admin
+async function listUsers(creds = null) {
+  const token = await getZoomToken(creds);
+  const res = await axios.get('https://api.zoom.us/v2/users', {
+    headers: { Authorization: `Bearer ${token}` },
+    params: { status: 'active', page_size: 300 },
+  });
+  return (res.data.users || []).map(u => ({
+    id:        u.id,
+    email:     u.email,
+    name:      [u.first_name, u.last_name].filter(Boolean).join(' ') || u.email,
+    type:      u.type,
+    licensed:  u.type === 2,
+  }));
+}
+
 module.exports = {
   createMeeting, deleteMeeting, getStartUrl, verifyWebhookSignature,
-  getMeetingRecordings, downloadRecordingStream,
+  getMeetingRecordings, downloadRecordingStream, listUsers,
 };
