@@ -56,6 +56,15 @@ function Calendar() {
   const [modalError, setModalError] = useState('')
   const [modalSuccess, setModalSuccess] = useState(false)
 
+  // ล็อกไม่ให้หน้าปฏิทินข้างหลัง scroll ตอนเปิด modal
+  // บนมือถือถ้าไม่ล็อก การ scroll ใน modal จะไปลากพื้นหลังแทน แล้ว modal เลื่อนไม่ได้
+  useEffect(() => {
+    if (modalHour === null) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [modalHour])
+
   // โหลด room list ครั้งเดียวตอน mount + default เลือก tier แรกที่ใช้งานได้
   useEffect(() => {
     api.get('/bookings/rooms')
@@ -569,9 +578,26 @@ function Calendar() {
       </div>
 
       {modalHour !== null && (
-        <div style={s.overlay} onClick={closeModal}>
-          <div style={s.modal} className="slide-in" onClick={e => e.stopPropagation()}>
-            <div style={s.modalHeader}>
+        <div
+          style={{
+            ...s.overlay,
+            // มือถือ: ดันชิดล่างเป็น bottom sheet + ไม่มี padding รอบ → ได้พื้นที่สูงสุด
+            alignItems: isMobile ? 'flex-end' : 'center',
+            padding: isMobile ? 0 : 20,
+          }}
+          onClick={closeModal}
+        >
+          <div
+            style={{
+              ...s.modal,
+              maxWidth: isMobile ? '100%' : 480,
+              maxHeight: isMobile ? '92dvh' : 'calc(100dvh - 40px)',
+              borderRadius: isMobile ? '18px 18px 0 0' : 18,
+            }}
+            className="slide-in"
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ ...s.modalHeader, padding: isMobile ? '18px 18px 14px' : '24px 28px 20px' }}>
               <div>
                 <h3 style={s.modalTitle}>จองห้องประชุม</h3>
                 <p style={s.modalSub}>
@@ -588,7 +614,7 @@ function Calendar() {
               </button>
             </div>
 
-            <div style={s.modalBody}>
+            <div style={{ ...s.modalBody, padding: isMobile ? '16px 18px' : '20px 28px' }}>
               <div style={s.field}>
                 <label style={s.label}>หัวข้อการประชุม <span style={s.req}>*</span></label>
                 <input
@@ -759,7 +785,15 @@ function Calendar() {
               )}
             </div>
 
-            <div style={s.modalFooter}>
+            <div
+              style={{
+                ...s.modalFooter,
+                // เผื่อแถบ home indicator ของ iPhone ไม่ให้ทับปุ่มยืนยัน
+                padding: isMobile
+                  ? '12px 18px calc(12px + env(safe-area-inset-bottom))'
+                  : '16px 28px 24px',
+              }}
+            >
               <button
                 style={s.cancelBtn}
                 className="ku-cancel-btn"
@@ -1076,16 +1110,23 @@ const s = {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     zIndex: 100, padding: 20,
     animation: 'fadeIn 0.2s var(--ease)',
+    // safety net: ถ้า browser ไม่รู้จัก dvh บน modal ให้ overlay เลื่อนแทน ปุ่มจะได้ไม่หลุดจอ
+    overflowY: 'auto',
   },
+  // maxHeight/borderRadius ถูก override ตาม isMobile ตอน render
+  // flex column + body ที่ scroll ได้ → header กับปุ่มยืนยันตรึงอยู่เสมอ ไม่หลุดออกนอกจอ
   modal: {
     background: 'white', borderRadius: 18, width: '100%', maxWidth: 480,
     boxShadow: '0 24px 60px rgba(1, 74, 50, 0.35), 0 8px 24px rgba(1, 74, 50, 0.15)',
     overflow: 'hidden',
+    display: 'flex', flexDirection: 'column',
+    maxHeight: 'calc(100dvh - 40px)',
   },
   modalHeader: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
     padding: '24px 28px 20px',
     borderBottom: '1px solid #f0f0f0',
+    flexShrink: 0,
   },
   modalTitle: { fontSize: 20, fontWeight: 700, color: '#014A32', margin: 0 },
   modalSub: { fontSize: 13, color: '#666', margin: '4px 0 0' },
@@ -1094,7 +1135,15 @@ const s = {
     color: '#888', background: 'transparent',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
-  modalBody: { padding: '20px 28px' },
+  modalBody: {
+    padding: '20px 28px',
+    // ส่วนที่เลื่อนได้ — minHeight 0 จำเป็นไม่งั้น flex item ไม่ยอมหดต่ำกว่า content
+    overflowY: 'auto',
+    flex: 1,
+    minHeight: 0,
+    WebkitOverflowScrolling: 'touch',
+    overscrollBehavior: 'contain',
+  },
   field: { marginBottom: 16 },
   label: { display: 'block', fontSize: 13, fontWeight: 600, color: '#333', marginBottom: 8 },
   req: { color: '#c62828' },
@@ -1140,6 +1189,8 @@ const s = {
   modalFooter: {
     display: 'flex', gap: 10, padding: '16px 28px 24px',
     borderTop: '1px solid #f0f0f0',
+    flexShrink: 0,
+    background: 'white',
   },
   cancelBtn: {
     flex: 1, padding: '12px 0',
