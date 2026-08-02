@@ -22,13 +22,16 @@ function Login() {
     }
     const query = new URLSearchParams(window.location.search)
     const err = query.get('error')
-    if (err === 'domain') {
-      setError('อีเมลนี้เข้าใช้งานไม่ได้ — กรุณาใช้บัญชี Google ของมหาวิทยาลัย (@ku.th หรือ @ku.ac.th) เท่านั้น')
-    } else if (err === 'kulogin') {
-      setError('เข้าสู่ระบบผ่าน KU ALL-Login ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
-    } else if (err === 'kulogin_unconfigured') {
-      setError('KU ALL-Login ยังไม่เปิดใช้งาน (อยู่ระหว่างรอ credential จากสำนักบริการคอมพิวเตอร์)')
+    const messages = {
+      domain: 'อีเมลนี้เข้าใช้งานไม่ได้ — กรุณาใช้บัญชี Google ของมหาวิทยาลัย (@ku.th หรือ @ku.ac.th) เท่านั้น',
+      kulogin: 'เข้าสู่ระบบผ่าน KU ALL-Login ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
+      kulogin_unconfigured: 'KU ALL-Login ยังไม่เปิดใช้งาน (อยู่ระหว่างรอ credential จากสำนักบริการคอมพิวเตอร์)',
+      google_unconfigured: 'ระบบเข้าสู่ระบบด้วย Google ยังตั้งค่าไม่ครบ กรุณาแจ้งผู้ดูแลระบบ',
+      ratelimit: 'มีผู้ใช้งานเข้าสู่ระบบพร้อมกันจำนวนมาก กรุณารอสักครู่แล้วลองใหม่อีกครั้ง',
+      server: 'ระบบขัดข้องระหว่างเข้าสู่ระบบ กรุณาลองใหม่ หากยังไม่ได้กรุณาแจ้งผู้ดูแลระบบ',
     }
+    if (err && messages[err]) setError(messages[err])
+    else if (err) setError('เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
     if (err) window.history.replaceState(null, '', window.location.pathname)
   }, [navigate])
 

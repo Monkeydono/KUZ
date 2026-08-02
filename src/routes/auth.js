@@ -32,13 +32,18 @@ passport.use(new GoogleStrategy({
 
     // upsert user + เก็บ tokens เสมอ
     // refresh_token จะมาเฉพาะตอน user accept consent — COALESCE กัน null override ของเดิม
+    //
+    // role: ห้าม override ของเดิม — ไม่งั้นคนที่ admin ตั้งเป็น staff/priority/admin ผ่าน UI
+    // จะถูก reset กลับเป็น student ทุกครั้งที่ login ($3 เป็น student สำหรับทุกคนที่ไม่ได้อยู่ใน ADMIN_EMAILS)
+    // ยกเว้น ADMIN_EMAILS → บังคับเป็น admin เสมอ (bootstrap ไว้กู้สิทธิ์ตัวเองได้)
+    // $3::text ใช้ได้ทั้งกรณี role เป็น ENUM user_role และ VARCHAR
     const result = await pool.query(
       `INSERT INTO users (email, name, role,
                           google_access_token, google_refresh_token, google_token_expires_at)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (email) DO UPDATE SET
          name = EXCLUDED.name,
-         role = EXCLUDED.role,
+         role = CASE WHEN $3::text = 'admin' THEN EXCLUDED.role ELSE users.role END,
          google_access_token = EXCLUDED.google_access_token,
          google_refresh_token = COALESCE(EXCLUDED.google_refresh_token, users.google_refresh_token),
          google_token_expires_at = EXCLUDED.google_token_expires_at
@@ -51,6 +56,17 @@ passport.use(new GoogleStrategy({
     return done(err);
   }
 }));
+
+// ตรวจ env ให้ครบก่อนเด้งไป Google — ถ้าขาด passport จะโยน error ดิบออกมาให้ user เห็น
+// (ต้องอยู่ก่อน route /google และครอบ /google/callback ด้วย)
+router.use('/google', (req, res, next) => {
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_CALLBACK_URL) {
+    console.error('[auth] Google OAuth env ไม่ครบ — ตรวจ GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_CALLBACK_URL');
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    return res.redirect(`${frontendUrl}/login?error=google_unconfigured`);
+  }
+  next();
+});
 
 // เริ่ม Google login — request scope รวม Calendar + Drive (drive.file = app-created files only)
 // accessType: offline + prompt: consent → บังคับให้ได้ refresh_token เสมอ
@@ -135,12 +151,13 @@ router.post('/kulogin/exchange', async (req, res) => {
       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     const role = adminEmails.includes(email) ? 'admin' : 'student';
 
+    // role: preserve ของเดิมเหมือนฝั่ง Google — ดูคอมเมนต์ใน GoogleStrategy
     const result = await pool.query(
       `INSERT INTO users (email, name, role, ku_type_person)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (email) DO UPDATE SET
          name = EXCLUDED.name,
-         role = EXCLUDED.role,
+         role = CASE WHEN $3::text = 'admin' THEN EXCLUDED.role ELSE users.role END,
          ku_type_person = EXCLUDED.ku_type_person
        RETURNING *`,
       [email, name, role, typePerson]
@@ -172,6 +189,19 @@ router.get('/me', authenticate, async (req, res, next) => {
     );
     res.json({ ...req.user, has_calendar: r.rows[0]?.has_calendar || false });
   } catch (err) { next(err); }
+});
+
+// error handler เฉพาะ /auth — error ที่หลุดจาก passport/OIDC (เช่น invalid_client, DB ล่ม)
+// จะตกไป error handler กลางแล้วพ่น JSON ดิบใส่หน้า browser ระหว่าง OAuth redirect
+// → ดักไว้เด้งกลับหน้า login พร้อม error code แทน (รายละเอียดจริงอยู่ใน pm2 log)
+router.use((err, req, res, next) => {
+  console.error('[auth error]', req.method, req.originalUrl, '—', err.message);
+  console.error(err.stack);
+  if (req.method === 'GET' && req.accepts('html')) {
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    return res.redirect(`${frontendUrl}/login?error=server`);
+  }
+  next(err);
 });
 
 module.exports = router;
