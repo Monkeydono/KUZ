@@ -123,6 +123,9 @@ router.get('/kulogin', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
   const { verifier, challenge } = kuLogin.generatePKCE();
   kuFlows.set(state, { verifier, at: Date.now() });
+  // log config ที่ส่งไปจริง — ถ้า Keycloak ตอบ "Client not found" หรือ "Invalid redirect_uri"
+  // จะได้เทียบกับที่ OCS ลงทะเบียนไว้ได้ทันทีจาก pm2 log (ไม่มี secret ปนออกมา)
+  console.log('[kulogin] authorize →', JSON.stringify(kuLogin.describeConfig()));
   res.redirect(kuLogin.buildAuthorizeUrl({ state, codeChallenge: challenge }));
 });
 

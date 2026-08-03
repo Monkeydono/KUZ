@@ -2,11 +2,17 @@ const crypto = require('crypto');
 const axios = require('axios');
 require('dotenv').config();
 
-// KU ALL-Login = Keycloak realm "KU-Alllogin" — OIDC endpoints (จากคู่มือ OCS v2.1)
-const AUTHORIZE = 'https://alllogin.ku.ac.th/realms/KU-Alllogin/protocol/openid-connect/auth';
-const TOKEN     = 'https://alllogin.ku.ac.th/realms/KU-Alllogin/protocol/openid-connect/token';
-const USERINFO  = 'https://alllogin.ku.ac.th/realms/KU-Alllogin/protocol/openid-connect/userinfo';
-const LOGOUT    = 'https://alllogin.ku.ac.th/realms/KU-Alllogin/protocol/openid-connect/logout';
+// KU ALL-Login = Keycloak ของ OCS — OIDC endpoints (จากคู่มือ OCS v2.1)
+// host/realm ตั้งผ่าน env ได้ เพราะ OCS อาจให้ client อยู่คนละ realm (เช่น realm ทดสอบ)
+// ถ้าค่าผิด Keycloak จะตอบ "Client not found" ตั้งแต่หน้าแรก — แก้ที่ .env ไม่ต้อง deploy ใหม่
+const BASE_URL = (process.env.KU_LOGIN_BASE_URL || 'https://alllogin.ku.ac.th').replace(/\/+$/, '');
+const REALM    = process.env.KU_LOGIN_REALM || 'KU-Alllogin';
+const OIDC     = `${BASE_URL}/realms/${REALM}/protocol/openid-connect`;
+
+const AUTHORIZE = `${OIDC}/auth`;
+const TOKEN     = `${OIDC}/token`;
+const USERINFO  = `${OIDC}/userinfo`;
+const LOGOUT    = `${OIDC}/logout`;
 
 const CLIENT_ID     = process.env.KU_LOGIN_CLIENT_ID;
 const CLIENT_SECRET = process.env.KU_LOGIN_CLIENT_SECRET;
@@ -16,6 +22,18 @@ const REDIRECT_URI  = process.env.KU_LOGIN_REDIRECT_URI;
 // ยังไม่ได้ตั้งค่า (รอ CLIENT_ID/SECRET จาก OCS) → route จะ short-circuit
 function isConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET && REDIRECT_URI);
+}
+
+// สรุป config ที่ resolve ได้จริง — ไม่มี secret ปนออกมา ใช้ตอนไล่ปัญหากับ OCS
+function describeConfig() {
+  return {
+    realm:        REALM,
+    authorize:    AUTHORIZE,
+    client_id:    CLIENT_ID || null,
+    redirect_uri: REDIRECT_URI || null,
+    scope:        SCOPE,
+    has_secret:   Boolean(CLIENT_SECRET),
+  };
 }
 
 function b64url(buf) {
@@ -70,6 +88,7 @@ async function fetchUserInfo(accessToken) {
 
 module.exports = {
   isConfigured,
+  describeConfig,
   generatePKCE,
   buildAuthorizeUrl,
   exchangeCode,
