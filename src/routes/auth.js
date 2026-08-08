@@ -107,9 +107,13 @@ router.get('/failed', (req, res) => {
 
 // ===== KU ALL-Login (OIDC / Keycloak) =====
 // redirect_uri ต้องตรงเป๊ะกับที่ลงทะเบียนกับ OCS
-// ใช้ KU_LOGIN_REDIRECT_URI = https://meet.ocs.ku.ac.th/auth/kulogin/callback
-// PKCE verifier เก็บชั่วคราว keyed by state (single PM2 instance, TTL 5 นาที)
+// prod: KU_LOGIN_REDIRECT_URI = https://meet.ocs.ku.ac.th/calendar (หน้า React ไม่ใช่ backend)
+//
+// PKCE verifier เก็บใน memory keyed by state, TTL 5 นาที
+// ⚠️ ใช้ได้เฉพาะ pm2 แบบ instance เดียว — ถ้ารัน cluster mode หลาย worker
+// authorize กับ exchange จะคนละ process แล้ว Map ว่างเสมอ → invalid_state ทุกครั้ง
 const kuFlows = new Map();
+const PM2_INSTANCE = process.env.NODE_APP_INSTANCE ?? process.env.pm_id ?? '-';
 setInterval(() => {
   const now = Date.now();
   for (const [s, v] of kuFlows) if (now - v.at > 5 * 60 * 1000) kuFlows.delete(s);
@@ -135,7 +139,15 @@ router.post('/kulogin/exchange', async (req, res) => {
   try {
     const { code, state } = req.body;
     const flow = state && kuFlows.get(state);
-    if (!code || !flow) return res.status(400).json({ error: 'invalid_state' });
+    if (!code || !flow) {
+      // flows_in_memory=0 ทั้งที่เพิ่งกด login → เกือบแน่ว่า pm2 รัน cluster mode
+      // (หรือ backend restart คั่นกลาง / ใช้เวลา login เกิน 5 นาที)
+      console.error('[kulogin exchange] invalid_state —',
+        `has_code=${Boolean(code)} has_state=${Boolean(state)}`,
+        `flow_found=${Boolean(flow)} flows_in_memory=${kuFlows.size}`,
+        `pm2_instance=${PM2_INSTANCE}`);
+      return res.status(400).json({ error: 'invalid_state' });
+    }
     kuFlows.delete(state);
 
     const tokens = await kuLogin.exchangeCode(code, flow.verifier);
@@ -144,7 +156,12 @@ router.post('/kulogin/exchange', async (req, res) => {
     // ใช้ google-mail (@ku.th) เป็น key หลัก → user เดียวกับ Google login
     const email = (info['google-mail'] || info.mail || info.email || '').toLowerCase();
     if (!email.endsWith('@ku.th') && !email.endsWith('@ku.ac.th')) {
-      return res.status(403).json({ error: 'domain' });
+      // scope ที่ OCS ให้มา (basic openid) อาจไม่ปล่อย claim อีเมลมาเลย
+      // log ชื่อ claim ที่ได้จริง เพื่อเทียบกับคู่มือ OCS ว่าต้องขอ scope อะไรเพิ่ม
+      console.error('[kulogin exchange] domain reject —',
+        `resolved_email=${JSON.stringify(email)}`,
+        `claims_received=${JSON.stringify(Object.keys(info))}`);
+      return res.status(403).json({ error: 'ku_domain' });
     }
 
     const name = info.thainame || info.cn || info.name || email;
@@ -175,7 +192,13 @@ router.post('/kulogin/exchange', async (req, res) => {
     // ส่ง id_token กลับด้วย → frontend ใช้เป็น id_token_hint ตอน logout SSO
     res.json({ token, idToken: tokens.id_token || null });
   } catch (err) {
-    console.error('[kulogin exchange]', err.response?.data || err.message);
+    // แยกให้ชัดว่าพังตอน exchange code หรือตอน fetch userinfo
+    const step = err.config?.url?.includes('/token') ? 'token_exchange'
+               : err.config?.url?.includes('/userinfo') ? 'userinfo'
+               : 'unknown';
+    console.error(`[kulogin exchange] failed at ${step} (pm2_instance=${PM2_INSTANCE}) —`,
+      `status=${err.response?.status}`,
+      JSON.stringify(err.response?.data || err.message));
     res.status(500).json({ error: 'kulogin_failed' });
   }
 });

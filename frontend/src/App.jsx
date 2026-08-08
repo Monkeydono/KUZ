@@ -57,7 +57,12 @@ function KuLoginExchange() {
         // reload เต็มไปที่ /calendar (clean URL) — navigate path เดิมไม่ remount CalendarRoute
         window.location.replace('/calendar')
       })
-      .catch(() => navigate('/login?error=kulogin', { replace: true }))
+      // ส่งต่อ error code จาก backend (invalid_state / ku_domain / kulogin_failed)
+      // เพื่อให้หน้า login บอกสาเหตุได้ตรง ไม่ใช่ข้อความรวมอันเดียว
+      .catch(err => {
+        const code = err.response?.data?.error || 'kulogin'
+        navigate(`/login?error=${encodeURIComponent(code)}`, { replace: true })
+      })
   }, [navigate])
   return (
     <div style={{
