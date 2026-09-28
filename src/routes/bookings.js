@@ -4,11 +4,15 @@ const bookingService = require('../services/bookingService');
 const roomService = require('../services/roomService');
 const googleDriveService = require('../services/googleDriveService');
 const pool = require('../../config/db');
+const kuLogin = require('../services/kuLoginService');
+
+// guest (req.user = null) เห็นห้องเหมือน student
+const roleOf = (req) => req.user?.role || 'student';
 
 // GET /bookings/rooms — list ห้องที่ user role ปัจจุบันจองได้
 router.get('/rooms', async (req, res, next) => {
   try {
-    const rooms = await roomService.listAvailableRooms(req.user.role);
+    const rooms = await roomService.listAvailableRooms(roleOf(req));
     res.json(rooms);
   } catch (err) {
     next(err);
@@ -23,7 +27,7 @@ router.get('/available', async (req, res, next) => {
     let roomIds;
     if (capacity) {
       const cap = parseInt(capacity, 10);
-      roomIds = await roomService.getRoomIdsByCapacity(cap, req.user.role);
+      roomIds = await roomService.getRoomIdsByCapacity(cap, roleOf(req));
     } else if (roomId) {
       roomIds = [roomId];
     } else {
@@ -36,19 +40,25 @@ router.get('/available', async (req, res, next) => {
     }
 
     // รวม pending_approval ด้วย — slot ถูกจองเสมือนแล้ว (กัน double-book + แสดงให้คนอื่นเห็นว่าไม่ว่าง)
+    // ทุกคนรวมถึง guest เห็นหัวข้อการประชุมและสถานะ เพื่อดูว่าช่วงไหนใครใช้ห้องทำอะไร
+    // ไม่ส่งชื่อ อีเมล หรือลิงก์ Zoom ของผู้จอง — ข้อมูลเหล่านี้เห็นได้เฉพาะเจ้าของและแอดมิน
+    // guest: $2/$3 เป็น NULL → is_mine/is_co_host = false เสมอ
     const result = await pool.query(
-      `SELECT start_time, end_time, room_id,
-              (user_id = $2) AS is_mine,
-              EXISTS (
-                SELECT 1 FROM unnest(co_host_emails) AS ch(email)
-                 WHERE LOWER(ch.email) = LOWER($3)
-              ) AS is_co_host
-         FROM bookings
-        WHERE status IN ('confirmed', 'pending_approval')
-          AND DATE(start_time AT TIME ZONE 'Asia/Bangkok') = $1
-          AND room_id = ANY($4::uuid[])
+      `SELECT start_time, end_time, room_id, status, is_mine, is_co_host, title
+         FROM (
+           SELECT start_time, end_time, room_id, status, title,
+                  COALESCE(user_id = $2, false) AS is_mine,
+                  EXISTS (
+                    SELECT 1 FROM unnest(co_host_emails) AS ch(email)
+                     WHERE LOWER(ch.email) = LOWER($3)
+                  ) AS is_co_host
+             FROM bookings
+            WHERE status IN ('confirmed', 'pending_approval')
+              AND DATE(start_time AT TIME ZONE 'Asia/Bangkok') = $1
+              AND room_id = ANY($4::uuid[])
+         ) b
         ORDER BY start_time`,
-      [date, req.user.id, req.user.email, roomIds]
+      [date, req.user?.id || null, req.user?.email || null, roomIds]
     );
     res.json({ total_rooms: roomIds.length, bookings: result.rows });
   } catch (err) {
@@ -69,7 +79,18 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { title, startTime, endTime, coHostEmails, recurring, roomId, capacity, notes } = req.body;
+    // ต้องยืนยันตัวตนผ่าน KU ALL-Login อย่างน้อย 1 ครั้งก่อนจอง (feedback Rev.1 ข้อ 1)
+    // admin ข้ามได้ — กันล็อกตัวเองออกถ้า KU ALL-Login มีปัญหา
+    if (kuLogin.isProfileRequired() && req.user.role !== 'admin') {
+      const p = await pool.query(`SELECT ku_profile_at FROM users WHERE id = $1`, [req.user.id]);
+      if (!p.rows[0]?.ku_profile_at) {
+        return res.status(403).json({
+          error: 'กรุณาเข้าสู่ระบบด้วย KU ALL-Login หนึ่งครั้งเพื่อยืนยันตัวตนก่อนจองห้อง',
+          code:  'need_kulogin',
+        });
+      }
+    }
+    const { title, startTime, endTime, coHostEmails, recurring, roomId, capacity, notes, guestTimezone } = req.body;
     const args = {
       userId:    req.user.id,
       userEmail: req.user.email,
@@ -81,6 +102,7 @@ router.post('/', async (req, res, next) => {
       roomId,
       capacity,
       notes,
+      guestTimezone,
     };
     if (recurring && recurring.count > 1) {
       const list = await bookingService.createRecurringBooking({ ...args, recurring });

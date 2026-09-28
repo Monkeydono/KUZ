@@ -29,66 +29,112 @@ async function assertCapacityFitsAccount(zoomAccountId, capacity) {
 // admin only: role change, rooms CRUD, zoom_accounts CRUD, CSV exports
 router.use(requireStaff);
 
-// GET /admin/stats — ตัวเลขสรุป + ข้อมูลกราฟ
+// GET /admin/stats?from=YYYY-MM-DD&to=YYYY-MM-DD — ตัวเลขสรุป + ข้อมูลกราฟ
+// ช่วงวันที่นับตามวันที่ประชุม เวลาไทย (feedback Rev.1 ข้อ 5: เลือก Date range ได้)
+// ไม่ส่งช่วงมา = 30 วันล่าสุดถึงวันนี้
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_RANGE_DAYS = 366;
+
+function bangkokToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date());
+}
+function shiftDate(ymd, days) {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 router.get('/stats', async (req, res, next) => {
   try {
-    const [totals, byDay, byStatus, topUsers, peakHours] = await Promise.all([
+    const today = bangkokToday();
+    let to   = DATE_RE.test(req.query.to || '')   ? req.query.to   : today;
+    let from = DATE_RE.test(req.query.from || '') ? req.query.from : shiftDate(to, -29);
+    if (from > to) [from, to] = [to, from];
+    const spanDays = (new Date(`${to}T00:00:00Z`) - new Date(`${from}T00:00:00Z`)) / 86400000 + 1;
+    if (spanDays > MAX_RANGE_DAYS) {
+      return res.status(400).json({ error: `เลือกช่วงวันที่ได้ไม่เกิน ${MAX_RANGE_DAYS} วัน` });
+    }
+
+    // เงื่อนไขช่วงวันที่ใช้ร่วมกันทุก query ($1 = from, $2 = to)
+    const inRange = `DATE(b.start_time AT TIME ZONE 'Asia/Bangkok') BETWEEN $1::date AND $2::date`;
+    const range = [from, to];
+
+    const [totals, byDay, byStatus, topUsers, peakHours, byType] = await Promise.all([
       pool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE status = 'confirmed' AND start_time >= NOW())               AS upcoming,
-          COUNT(*) FILTER (WHERE DATE(start_time AT TIME ZONE 'Asia/Bangkok')
-                                 = DATE(NOW()       AT TIME ZONE 'Asia/Bangkok'))             AS today,
-          COUNT(*) FILTER (WHERE start_time >= NOW() - INTERVAL '7 days')                     AS week,
-          COUNT(*) FILTER (WHERE start_time >= NOW() - INTERVAL '30 days')                    AS month,
-          COUNT(*) FILTER (WHERE status = 'cancelled' AND start_time >= NOW() - INTERVAL '30 days') AS cancelled_month,
+          (SELECT COUNT(*) FROM bookings WHERE status = 'confirmed' AND start_time >= NOW())  AS upcoming,
+          (SELECT COUNT(*) FROM bookings
+            WHERE DATE(start_time AT TIME ZONE 'Asia/Bangkok') = DATE(NOW() AT TIME ZONE 'Asia/Bangkok')) AS today,
+          (SELECT COUNT(*) FROM bookings WHERE status = 'pending_approval')                   AS pending,
+          COUNT(*) FILTER (WHERE b.status != 'cancelled')                                    AS range_booked,
+          COUNT(*) FILTER (WHERE b.status  = 'cancelled')                                    AS range_cancelled,
+          COALESCE(ROUND(SUM(EXTRACT(EPOCH FROM b.end_time - b.start_time) / 3600)
+                   FILTER (WHERE b.status != 'cancelled')::numeric, 1), 0)                   AS range_hours,
           (SELECT COUNT(*) FROM users)                                                        AS users_total,
           (SELECT COUNT(*) FROM users WHERE role = 'admin')                                   AS admins_total
-        FROM bookings
-      `),
-      // booking ต่อวัน 14 วันย้อนหลัง (รวมวันนี้)
+        FROM bookings b
+        WHERE ${inRange}
+      `, range),
+      // ทุกวันในช่วง รวมวันที่ไม่มีการจอง (กราฟจะได้ไม่ขาดช่วง)
       pool.query(`
-        SELECT DATE(start_time AT TIME ZONE 'Asia/Bangkok') AS day,
-               COUNT(*) FILTER (WHERE status != 'cancelled') AS created,
-               COUNT(*) FILTER (WHERE status  = 'cancelled') AS cancelled
-          FROM bookings
-         WHERE start_time >= NOW() - INTERVAL '14 days'
-         GROUP BY day
-         ORDER BY day
-      `),
+        SELECT to_char(d, 'YYYY-MM-DD') AS day,
+               COUNT(b.id) FILTER (WHERE b.status != 'cancelled') AS created,
+               COUNT(b.id) FILTER (WHERE b.status  = 'cancelled') AS cancelled
+          FROM generate_series($1::date, $2::date, interval '1 day') AS d
+          LEFT JOIN bookings b ON DATE(b.start_time AT TIME ZONE 'Asia/Bangkok') = d::date
+         GROUP BY d
+         ORDER BY d
+      `, range),
       pool.query(`
-        SELECT status, COUNT(*) AS count
-          FROM bookings
-         WHERE start_time >= NOW() - INTERVAL '30 days'
-         GROUP BY status
-      `),
+        SELECT b.status, COUNT(*) AS count
+          FROM bookings b
+         WHERE ${inRange}
+         GROUP BY b.status
+      `, range),
       pool.query(`
         SELECT u.email, u.name, COUNT(b.id) AS bookings
           FROM bookings b
           JOIN users u ON u.id = b.user_id
-         WHERE b.start_time >= NOW() - INTERVAL '30 days'
+         WHERE ${inRange}
            AND b.status != 'cancelled'
          GROUP BY u.id
          ORDER BY bookings DESC
          LIMIT 5
-      `),
-      // ชั่วโมงนิยมสุด (เพื่อกราฟแท่ง)
+      `, range),
+      // ชั่วโมงที่เริ่มประชุม
       pool.query(`
-        SELECT EXTRACT(HOUR FROM start_time AT TIME ZONE 'Asia/Bangkok')::int AS hour,
+        SELECT EXTRACT(HOUR FROM b.start_time AT TIME ZONE 'Asia/Bangkok')::int AS hour,
                COUNT(*) AS count
-          FROM bookings
-         WHERE start_time >= NOW() - INTERVAL '30 days'
-           AND status != 'cancelled'
+          FROM bookings b
+         WHERE ${inRange}
+           AND b.status != 'cancelled'
          GROUP BY hour
          ORDER BY hour
-      `),
+      `, range),
+      // สถิติตามประเภทบุคคลจาก KU ALL-Login (feedback Rev.1 ข้อ 5)
+      // NULL = ผู้ใช้ที่ยังไม่เคยยืนยันตัวตนผ่าน KU ALL-Login
+      pool.query(`
+        SELECT u.ku_type_person AS type_person,
+               COUNT(DISTINCT u.id)                                          AS users,
+               COUNT(b.id) FILTER (WHERE b.status != 'cancelled')            AS bookings,
+               COALESCE(ROUND(SUM(EXTRACT(EPOCH FROM b.end_time - b.start_time) / 3600)
+                        FILTER (WHERE b.status != 'cancelled')::numeric, 1), 0) AS hours
+          FROM bookings b
+          JOIN users u ON u.id = b.user_id
+         WHERE ${inRange}
+         GROUP BY u.ku_type_person
+         ORDER BY bookings DESC
+      `, range),
     ]);
 
     res.json({
+      range:     { from, to, days: spanDays },
       totals:    totals.rows[0],
       byDay:     byDay.rows,
       byStatus:  byStatus.rows,
       topUsers:  topUsers.rows,
       peakHours: peakHours.rows,
+      byType:    byType.rows,
     });
   } catch (err) {
     next(err);

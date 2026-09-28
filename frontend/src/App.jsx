@@ -7,6 +7,7 @@ import MyBookings from './pages/my-bookings'
 import Calendar from './pages/calendar'
 import Join from './pages/join'
 import Admin from './pages/admin'
+import PrivacyNotice from './components/PrivacyNotice'
 
 // อ่าน token จาก URL fragment (#token=...) ไม่ใช่ query string
 // fragment ไม่ติด server log / Referer header
@@ -28,8 +29,8 @@ function TokenHandler() {
       navigate('/calendar', { replace: true })
       return
     }
-    const existingToken = localStorage.getItem('token')
-    navigate(existingToken ? '/calendar' : '/login', { replace: true })
+    // guest ก็เข้าหน้าปฏิทินได้ — จะถูกพาไปหน้าเข้าสู่ระบบเมื่อกดจอง
+    navigate('/calendar', { replace: true })
   }, [navigate])
 
   return null
@@ -54,8 +55,10 @@ function KuLoginExchange() {
         localStorage.setItem('token', res.data.token)
         // เก็บ id_token ไว้ใช้เป็น id_token_hint ตอน logout SSO
         if (res.data.idToken) localStorage.setItem('ku_id_token', res.data.idToken)
-        // reload เต็มไปที่ /calendar (clean URL) — navigate path เดิมไม่ remount CalendarRoute
-        window.location.replace('/calendar')
+        // ขั้นที่ 2 ขึ้นมาเอง: ยังไม่เคยเชื่อม Google → ไปหน้า Google ต่อทันที
+        // googleLinkUrl มีตั๋วเชื่อมบัญชีจาก backend (บังคับบัญชี @ku.th อีเมลเดียวกัน)
+        // เคยเชื่อมแล้ว → เข้าใช้งานได้เลย · reload เต็ม (clean URL) เพราะ navigate path เดิมไม่ remount
+        window.location.replace(res.data.hasCalendar ? '/calendar' : res.data.googleLinkUrl)
       })
       // ส่งต่อ error code จาก backend (invalid_state / ku_domain / kulogin_failed)
       // เพื่อให้หน้า login บอกสาเหตุได้ตรง ไม่ใช่ข้อความรวมอันเดียว
@@ -74,11 +77,12 @@ function KuLoginExchange() {
   )
 }
 
-// ดัก OAuth callback (?code=) ก่อน PrivateRoute เด้งไป /login
+// ดัก OAuth callback (?code=) ก่อนแสดงปฏิทิน
+// ปฏิทินเปิดให้ guest ดูได้ ไม่ต้องผ่าน PrivateRoute
 function CalendarRoute() {
   const params = new URLSearchParams(window.location.search)
   if (params.has('code') && params.has('state')) return <KuLoginExchange />
-  return <PrivateRoute><Calendar /></PrivateRoute>
+  return <Calendar />
 }
 
 // ปลายทางหลัง logout จาก KU ALL-Login (post_logout_redirect_uri ที่ลงทะเบียน = /logout)
@@ -95,6 +99,8 @@ function Logout() {
 
 function App() {
   return (
+    <>
+    <PrivacyNotice />
     <Routes>
       <Route path="/" element={<TokenHandler />} />
       <Route path="/login" element={<Login />} />
@@ -105,6 +111,7 @@ function App() {
       <Route path="/join/:id" element={<PrivateRoute><Join /></PrivateRoute>} />
       <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
     </Routes>
+    </>
   )
 }
 

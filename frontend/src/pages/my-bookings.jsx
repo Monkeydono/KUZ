@@ -250,6 +250,18 @@ function MyBookings() {
                           {b.notes}
                         </div>
                       )}
+                      {/* feedback Rev.1 ข้อ 8: ผู้ใช้ถามว่าต้องรออนุมัตินานเท่าไหร่ */}
+                      {b.status === 'pending_approval' && (
+                        <div style={{
+                          marginTop: 8, padding: '8px 10px', borderRadius: 8,
+                          background: '#fffbeb', border: '1px solid #fde68a',
+                          fontSize: 12, color: '#92400e', lineHeight: 1.5,
+                        }}>
+                          ห้องขนาดใหญ่ต้องรอผู้ดูแลอนุมัติ ระบบแจ้งผู้ดูแลแล้วและจะเตือนซ้ำจนกว่าจะพิจารณา
+                          คุณจะได้รับอีเมลเมื่อมีผลอนุมัติ หากยังไม่ได้รับการอนุมัติเมื่อถึงเวลาประชุม
+                          ระบบจะยกเลิกคำขอและคืนโควตาให้อัตโนมัติ
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -258,14 +270,16 @@ function MyBookings() {
                     const hasDrive = !!b.drive_folder_url
                     const recordings = b.drive_recordings || []
                     const hasRecording = recordings.some(r => r.file_type === 'recording')
-                    const hasAnyAction = isUpcoming || hasDrive || recordings.length > 0
+                    // คำขอที่รออนุมัติยกเลิกเองได้ (ยังไม่มีห้อง Zoom — ไม่มีปุ่มเข้าร่วม)
+                    const isPendingUpcoming = b.status === 'pending_approval' && !isPast
+                    const hasAnyAction = isUpcoming || isPendingUpcoming || hasDrive || recordings.length > 0
                     if (!hasAnyAction) return null
                     return (
                       <div style={s.cardBottom}>
                         {isUpcoming && (
                           <>
                             <button
-                              onClick={() => navigate(`/join/${b.id}`)}
+                              onClick={() => window.open(`/join/${b.id}`, '_blank', 'noopener')}
                               style={s.zoomBtn}
                               className="ku-zoom-btn"
                             >
@@ -336,7 +350,7 @@ function MyBookings() {
                           )
                         })}
 
-                        {isUpcoming && !b.is_co_host && (
+                        {(isUpcoming || isPendingUpcoming) && !b.is_co_host && (
                           <button
                             style={s.cancelBtn}
                             className="ku-cancel"

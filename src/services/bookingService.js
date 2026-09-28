@@ -12,6 +12,18 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ALLOWED_DOMAINS = ['@ku.th', '@ku.ac.th'];
 const BKK_TZ = 'Asia/Bangkok';
 
+// เขตเวลาของผู้เข้าร่วมต่างชาติ (feedback Rev.1 ข้อ 12) — เวลาจองยังเป็นเวลาไทยเสมอ
+// ใช้ตั้ง timezone ของห้อง Zoom (คำเชิญของ Zoom จะแสดงเวลาตามเขตนี้) และแนบเวลาที่แปลงแล้วไปในอีเมล
+function normalizeGuestTimezone(tz) {
+  if (!tz || typeof tz !== 'string' || tz === BKK_TZ) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return tz;
+  } catch (e) {
+    throw { status: 400, message: 'เขตเวลาไม่ถูกต้อง' };
+  }
+}
+
 // ห้อง Zoom Pro plan (capacity > 100) ต้องผ่าน approval จาก staff/admin ก่อน
 // Free plan รองรับสูงสุด 100 → ห้อง 300/1000 = Pro → ต้องอนุมัติเพื่อกัน abuse + จัด account
 function requiresApproval(room) {
@@ -165,7 +177,8 @@ function maxDurationMinutes(room) {
   return room.creds ? 24 * 60 : 40;
 }
 
-async function createBooking({ userId, userEmail, userRole, title, startTime, endTime, coHostEmails, roomId, capacity, notes }) {
+async function createBooking({ userId, userEmail, userRole, title, startTime, endTime, coHostEmails, roomId, capacity, notes, guestTimezone }) {
+  const guestTz = normalizeGuestTimezone(guestTimezone);
   const isAdmin    = userRole === 'admin';
   const isPriority = userRole === 'priority';
   const bypassQuota = isAdmin || isPriority;
@@ -247,12 +260,12 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
       try {
         pendingResult = await pool.query(
           `INSERT INTO bookings
-             (user_id, title, start_time, end_time, co_host_emails, room_id, notes, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_approval')
+             (user_id, title, start_time, end_time, co_host_emails, room_id, notes, guest_timezone, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_approval')
            RETURNING *,
              (SELECT email FROM users WHERE id = $1) AS user_email,
              (SELECT name  FROM users WHERE id = $1) AS user_name`,
-          [userId, title, startTime, endTime, coHosts, room.id, noteText]
+          [userId, title, startTime, endTime, coHosts, room.id, noteText, guestTz]
         );
       } catch (err) {
         if (err.code === '23P01') {
@@ -299,6 +312,7 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
         durationMinutes: Math.ceil(duration),
         creds: room.creds,
         coHostEmails: coHosts,
+        timezone: guestTz,
       });
     } catch (err) {
       if (!bypassQuota) await quotaService.returnQuota(userId, start);
@@ -309,13 +323,13 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
     try {
       result = await pool.query(
         `INSERT INTO bookings
-           (user_id, title, start_time, end_time, zoom_meeting_id, zoom_join_url, zoom_password, co_host_emails, room_id, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           (user_id, title, start_time, end_time, zoom_meeting_id, zoom_join_url, zoom_password, co_host_emails, room_id, notes, guest_timezone)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING *,
            (SELECT email FROM users WHERE id = $1) as user_email,
            (SELECT name FROM users WHERE id = $1) as user_name`,
         [userId, title, startTime, endTime,
-         meeting.meetingId, meeting.joinUrl, meeting.password, coHosts, room.id, noteText]
+         meeting.meetingId, meeting.joinUrl, meeting.password, coHosts, room.id, noteText, guestTz]
       );
     } catch (err) {
       if (err.code === '23P01') {
@@ -395,8 +409,9 @@ async function createBooking({ userId, userEmail, userRole, title, startTime, en
 }
 
 async function createRecurringBooking({
-  userId, userEmail, userRole, title, startTime, endTime, coHostEmails, recurring, roomId, capacity, notes,
+  userId, userEmail, userRole, title, startTime, endTime, coHostEmails, recurring, roomId, capacity, notes, guestTimezone,
 }) {
+  const guestTz = normalizeGuestTimezone(guestTimezone);
   const noteText = notes && typeof notes === 'string' ? notes.trim().slice(0, 1000) : null;
   const isAdmin    = userRole === 'admin';
   const isPriority = userRole === 'priority';
@@ -526,6 +541,7 @@ async function createRecurringBooking({
         durationMinutes: Math.ceil((new Date(o.endTime) - new Date(o.startTime)) / 60000),
         creds: room.creds,
         coHostEmails: coHosts,
+        timezone: guestTz,
       });
       meetings.push(m);
     }
@@ -552,13 +568,13 @@ async function createRecurringBooking({
         `INSERT INTO bookings
            (user_id, title, start_time, end_time,
             zoom_meeting_id, zoom_join_url, zoom_password,
-            co_host_emails, series_id, room_id, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            co_host_emails, series_id, room_id, notes, guest_timezone)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *,
            (SELECT email FROM users WHERE id = $1) AS user_email,
            (SELECT name  FROM users WHERE id = $1) AS user_name`,
         [userId, title, o.startTime, o.endTime,
-         m.meetingId, m.joinUrl, m.password, coHosts, seriesId, room.id, noteText]
+         m.meetingId, m.joinUrl, m.password, coHosts, seriesId, room.id, noteText, guestTz]
       );
       inserted.push(r.rows[0]);
     }
@@ -639,7 +655,7 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this', reason
 
   let toCancel;
   if (scope === 'this' || !target.series_id) {
-    if (target.status !== 'confirmed') {
+    if (target.status !== 'confirmed' && target.status !== 'pending_approval') {
       throw { status: 400, message: 'การจองนี้ถูกยกเลิก/เสร็จสิ้นแล้ว' };
     }
     toCancel = [target];
@@ -654,7 +670,7 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this', reason
          LEFT JOIN zoom_accounts za ON za.id = r.zoom_account_id
         WHERE b.series_id = $1
           AND b.start_time >= $2
-          AND b.status = 'confirmed'`,
+          AND b.status IN ('confirmed', 'pending_approval')`,
       [target.series_id, target.start_time]
     );
     toCancel = r.rows;
@@ -667,7 +683,7 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this', reason
          FROM bookings b JOIN users u ON u.id = b.user_id
          LEFT JOIN rooms r ON r.id = b.room_id
          LEFT JOIN zoom_accounts za ON za.id = r.zoom_account_id
-        WHERE b.series_id = $1 AND b.status = 'confirmed'`,
+        WHERE b.series_id = $1 AND b.status IN ('confirmed', 'pending_approval')`,
       [target.series_id]
     );
     toCancel = r.rows;
@@ -692,7 +708,7 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this', reason
           SET status = 'cancelled',
               cancelled_reason = $2,
               cancelled_by     = $3
-        WHERE id = $1 AND status = 'confirmed' RETURNING id`,
+        WHERE id = $1 AND status IN ('confirmed', 'pending_approval') RETURNING id`,
       [b.id, isCancellingOther ? reason : null, isCancellingOther ? userId : null]
     );
     if (updRes.rowCount === 0) continue;
@@ -708,8 +724,11 @@ async function cancelBooking(bookingId, userId, userRole, scope = 'this', reason
       clientSecret: b.zoom_client_secret,
     } : null;
 
-    try { await zoomService.deleteMeeting(b.zoom_meeting_id, roomCreds); }
-    catch (err) { console.error('Zoom delete failed for', b.zoom_meeting_id, err.message); }
+    // pending_approval ยังไม่มี Zoom meeting (สร้างตอน approve) → ข้ามได้
+    if (b.zoom_meeting_id) {
+      try { await zoomService.deleteMeeting(b.zoom_meeting_id, roomCreds); }
+      catch (err) { console.error('Zoom delete failed for', b.zoom_meeting_id, err.message); }
+    }
 
     googleCalendarService.removeFromAttendees(b.id)
       .catch(err => console.error('gcal remove failed:', err.message));
@@ -905,6 +924,7 @@ async function approveBooking(bookingId, approverId) {
       durationMinutes: Math.ceil(duration),
       creds,
       coHostEmails:    booking.co_host_emails || [],
+      timezone:        booking.guest_timezone,
     });
   } catch (err) {
     throw { status: 502, message: 'ไม่สามารถสร้างห้อง Zoom ได้ตอน approve — ลองใหม่' };
@@ -977,6 +997,7 @@ async function rejectBooking(bookingId, approverId, reason) {
       RETURNING *,
         (SELECT email FROM users WHERE id = user_id) AS user_email,
         (SELECT name  FROM users WHERE id = user_id) AS user_name,
+        (SELECT role  FROM users WHERE id = user_id) AS owner_role,
         (SELECT name  FROM rooms WHERE id = room_id) AS room_name`,
     [bookingId, approverId, reason || null]
   );
@@ -984,6 +1005,11 @@ async function rejectBooking(bookingId, approverId, reason) {
     throw { status: 409, message: 'การจองนี้ไม่ได้รออนุมัติ หรือถูกอัปเดตไปแล้ว' };
   }
   const rejected = upd.rows[0];
+
+  // คืน quota — คำขอที่ไม่ผ่านอนุมัติไม่ควรนับเป็นการจอง (เหมือน cancelBooking: เฉพาะ student)
+  if (rejected.owner_role === 'student') {
+    await quotaService.returnQuota(rejected.user_id, rejected.start_time);
+  }
 
   await auditService.log({
     userId: approverId, bookingId: rejected.id, action: 'booking_rejected',
@@ -1024,6 +1050,7 @@ async function autoExpirePending() {
       RETURNING id, user_id, title, start_time, end_time,
         (SELECT email FROM users WHERE id = user_id) AS user_email,
         (SELECT name  FROM users WHERE id = user_id) AS user_name,
+        (SELECT role  FROM users WHERE id = user_id) AS owner_role,
         (SELECT name  FROM rooms WHERE id = room_id) AS room_name`
   );
   if (r.rowCount === 0) return 0;
@@ -1031,6 +1058,11 @@ async function autoExpirePending() {
   console.log(`[pending-expire] auto-cancelled ${r.rowCount} expired pending booking(s)`);
 
   for (const b of r.rows) {
+    // คืน quota — ไม่ได้รับอนุมัติ = ไม่ได้ใช้ห้องจริง
+    if (b.owner_role === 'student') {
+      try { await quotaService.returnQuota(b.user_id, b.start_time); }
+      catch (e) { console.error('expired quota refund failed:', e.message); }
+    }
     // ส่ง webhook + in-app notif แจ้ง user
     try {
       await notificationService.sendApprovalDecision(b, 'rejected',
@@ -1123,6 +1155,7 @@ async function reassignRoom(bookingId, newRoomId, adminId) {
         durationMinutes: Math.ceil(duration),
         creds,
         coHostEmails:    b.co_host_emails || [],
+        timezone:        b.guest_timezone,
       });
     } catch (err) {
       throw { status: 502, message: 'สร้าง meeting ในห้องใหม่ไม่สำเร็จ — ยกเลิกการย้าย' };

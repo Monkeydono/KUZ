@@ -4,6 +4,8 @@ import { AlertCircle, Check, Calendar, Clock, Users as UsersIcon } from 'lucide-
 import api from '../api'
 import { useUser } from '../useUser'
 import Navbar from '../components/Navbar'
+import TimezoneField from '../components/TimezoneField'
+import { utcToZoned, zonedRange, bangkokRuleError } from '../tz'
 
 const formatToDDMMYYYY = (yyyymmdd) => {
   if (!yyyymmdd) return ''
@@ -34,6 +36,7 @@ function Book() {
     coHosts: '',
     capacity: '',
     notes: '',
+    guestTimezone: '',
     recurringEnabled: false,
     recurringFreq: 'weekly',
     recurringCount: 4,
@@ -98,6 +101,18 @@ function Book() {
 
   const dateAsISO = parseDDMMYYYY(form.date) || ''
 
+  // วันและเวลาที่กรอกเป็นของเขตเวลาที่เลือก (ว่าง = เวลาไทย) → เวลาสากล + ตรวจกติกาเวลาไทย
+  const range = zonedRange(dateAsISO, form.startTime, form.endTime, form.guestTimezone)
+  const ruleError = range ? bangkokRuleError(range.start, range.end) : null
+
+  // เปลี่ยนเขตเวลา → แปลงวันและเวลาที่กรอกไว้ให้เป็นเวลาเดียวกันในเขตใหม่
+  const changeTimezone = (tz) => {
+    if (!range) { setForm({ ...form, guestTimezone: tz }); return }
+    const s = utcToZoned(range.start, tz)
+    const e = utcToZoned(range.end, tz)
+    setForm({ ...form, guestTimezone: tz, date: formatToDDMMYYYY(s.ymd), startTime: s.hhmm, endTime: e.hhmm })
+  }
+
   const handleSubmit = async () => {
     setError('')
     setSuccess(false)
@@ -113,13 +128,13 @@ function Book() {
       return
     }
 
-    // จำกัดเวลาจอง 08:00 - 24:00 (string compare ok เพราะ HH:mm zero-padded)
-    if (form.startTime < '08:00' || form.startTime > '23:59') {
-      setError('เวลาเริ่มต้องอยู่ระหว่าง 08:00 - 23:59')
+    // จำกัดเวลาจอง 08:00 - 24:00 เวลาไทย (หลังแปลงจากเขตเวลาที่เลือก)
+    if (!range) {
+      setError('กรุณาระบุวันและเวลาให้ครบ')
       return
     }
-    if (form.endTime < '08:00' || form.endTime > '23:59') {
-      setError('เวลาสิ้นสุดต้องอยู่ระหว่าง 08:00 - 24:00')
+    if (ruleError) {
+      setError(`เวลาจองอนุญาตเฉพาะ 08:00 - 24:00 เวลาไทย · ${ruleError}`)
       return
     }
 
@@ -129,14 +144,15 @@ function Book() {
       return
     }
 
-    const startTime = `${dateISO}T${form.startTime}:00+07:00`
-    const endTime   = `${dateISO}T${form.endTime}:00+07:00`
+    const startTime = range.start.toISOString()
+    const endTime   = range.end.toISOString()
     const coHostEmails = form.coHosts
       .split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
 
     const payload = { title: form.title, startTime, endTime, coHostEmails }
     if (form.capacity) payload.capacity = Number(form.capacity)
     if (form.notes.trim()) payload.notes = form.notes.trim()
+    if (form.guestTimezone) payload.guestTimezone = form.guestTimezone
     if (form.recurringEnabled && form.recurringCount > 1) {
       payload.recurring = { freq: form.recurringFreq, count: parseInt(form.recurringCount, 10) }
     }
@@ -151,6 +167,7 @@ function Book() {
         title: '', date: '', startTime: '', endTime: '', coHosts: '',
         capacity: form.capacity,  // คงค่า tier เดิม
         notes: '',
+    guestTimezone: '',
         recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
       })
     } catch (err) {
@@ -160,14 +177,7 @@ function Book() {
     }
   }
 
-  const calcDuration = () => {
-    if (!form.startTime || !form.endTime) return null
-    const [sh, sm] = form.startTime.split(':').map(Number)
-    const [eh, em] = form.endTime.split(':').map(Number)
-    const mins = (eh * 60 + em) - (sh * 60 + sm)
-    return mins > 0 ? mins : null
-  }
-  const duration = calcDuration()
+  const duration = range ? Math.round((range.end - range.start) / 60000) : null
   const overLimit = duration && duration > roomMaxMin
 
   // คำนวณ preview สำหรับ recurring series
@@ -175,10 +185,8 @@ function Book() {
     if (!form.recurringEnabled) return null
     const count = parseInt(form.recurringCount, 10)
     if (!count || count < 2) return null
-    const dateISO = parseDDMMYYYY(form.date)
-    if (!dateISO || !form.startTime) return null
-    const base = new Date(`${dateISO}T${form.startTime}:00+07:00`)
-    if (isNaN(base)) return null
+    if (!range) return null
+    const base = range.start
     const intervalMs = (form.recurringFreq === 'daily' ? 1 : 7) * 24 * 60 * 60 * 1000
     const last = new Date(base.getTime() + (count - 1) * intervalMs)
     const fmt = d => d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Bangkok' })
@@ -315,8 +323,20 @@ function Book() {
               />
             </div>
 
+            <TimezoneField
+              fieldStyle={s.field}
+              labelStyle={s.label}
+              inputStyle={s.input}
+              value={form.guestTimezone}
+              onChange={changeTimezone}
+              range={range}
+              ruleError={ruleError}
+            />
+
             <div style={s.field}>
-              <label style={s.label}>วันที่ <span style={s.req}>*</span></label>
+              <label style={s.label}>
+                วันที่ {form.guestTimezone && <span style={s.optional}>ตามเขตเวลาที่เลือก</span>} <span style={s.req}>*</span>
+              </label>
               <div style={s.dateWrap}>
                 <input
                   style={{ ...s.input, paddingRight: 44 }}
@@ -357,8 +377,8 @@ function Book() {
                     style={{ ...s.input, paddingRight: 44 }}
                     type="time"
                     className="ku-time-input"
-                    min="08:00"
-                    max="23:59"
+                    min={form.guestTimezone ? undefined : '08:00'}
+                    max={form.guestTimezone ? undefined : '23:59'}
                     value={form.startTime}
                     onChange={e => setForm({ ...form, startTime: e.target.value })}
                   />
@@ -381,8 +401,8 @@ function Book() {
                     style={{ ...s.input, paddingRight: 44 }}
                     type="time"
                     className="ku-time-input"
-                    min="08:00"
-                    max="23:59"
+                    min={form.guestTimezone ? undefined : '08:00'}
+                    max={form.guestTimezone ? undefined : '23:59'}
                     value={form.endTime}
                     onChange={e => setForm({ ...form, endTime: e.target.value })}
                   />
@@ -401,7 +421,7 @@ function Book() {
 
             <div style={s.field}>
               <label style={s.label}>
-                Co-host (อีเมล, คั่นด้วย comma) <span style={s.optional}>— ไม่บังคับ</span>
+                Co-host (อีเมล, คั่นด้วย comma)
               </label>
               <input
                 style={s.input}
@@ -414,9 +434,7 @@ function Book() {
             <div style={s.field}>
               <label style={s.label}>
                 หมายเหตุ / เหตุผลการจอง
-                {selectedTier && selectedTier.capacity > 100 && !isAdmin
-                  ? <span style={s.req}> *</span>
-                  : <span style={s.optional}> — ไม่บังคับ</span>}
+                {selectedTier && selectedTier.capacity > 100 && !isAdmin && <span style={s.req}> *</span>}
               </label>
               <textarea
                 style={{ ...s.input, minHeight: 70, resize: 'vertical', fontFamily: 'inherit' }}

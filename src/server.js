@@ -41,6 +41,15 @@ cron.schedule('0 3 * * *', async () => {
   }
 });
 
+// เตือนผู้อนุมัติเมื่อคำขอค้าง — ทุก 30 นาที เฉพาะ 08:00-20:00 เวลาไทย (ไม่ส่งกลางดึก)
+cron.schedule('*/30 8-20 * * *', async () => {
+  try {
+    await reminderService.sendPendingApprovalReminders();
+  } catch (err) {
+    console.error('Cron approval-reminder error:', err.message);
+  }
+}, { timezone: 'Asia/Bangkok' });
+
 // auto-expire pending_approval ที่ start_time ผ่านไปแล้ว — ทุก 15 นาที
 cron.schedule('*/15 * * * *', async () => {
   try {

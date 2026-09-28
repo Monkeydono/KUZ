@@ -49,12 +49,46 @@ function meetingsEndpoint(creds) {
   return `https://api.zoom.us/v2/users/${who}/meetings`;
 }
 
-async function createMeeting({ title, startTime, durationMinutes, creds = null, coHostEmails = [] }) {
+// เขตเวลาแบบ UTC±N (Etc/GMT...) → เมืองที่ Zoom รู้จักและไม่มีเวลาออมแสง (ทดสอบกับ Zoom API แล้ว)
+// Zoom ไม่รู้จัก Etc/GMT... จะตกไปใช้เวลาของบัญชี (America/Los_Angeles) ทำให้คำเชิญแสดงเวลาผิด
+// หมายเหตุ ชื่อ Etc กลับเครื่องหมาย: Etc/GMT-8 = UTC+8
+// UTC-12, -9, -8, -2 ไม่มีเมืองที่ Zoom รู้จักแบบเวลาคงที่ → ใช้ UTC แทน (เวลาถูกต้อง แค่แสดงเป็น UTC)
+const ZOOM_TZ_BY_ETC = {
+  'Etc/GMT+11': 'Pacific/Pago_Pago',
+  'Etc/GMT+10': 'Pacific/Honolulu',
+  'Etc/GMT+7':  'America/Phoenix',
+  'Etc/GMT+6':  'America/Regina',
+  'Etc/GMT+5':  'America/Bogota',
+  'Etc/GMT+4':  'America/Caracas',
+  'Etc/GMT+3':  'America/Argentina/Buenos_Aires',
+  'Etc/GMT+1':  'Atlantic/Cape_Verde',
+  'Etc/GMT-1':  'Africa/Algiers',
+  'Etc/GMT-2':  'Africa/Johannesburg',
+  'Etc/GMT-3':  'Asia/Riyadh',
+  'Etc/GMT-4':  'Asia/Dubai',
+  'Etc/GMT-5':  'Asia/Tashkent',
+  'Etc/GMT-6':  'Asia/Dhaka',
+  'Etc/GMT-7':  'Asia/Bangkok',
+  'Etc/GMT-8':  'Asia/Singapore',
+  'Etc/GMT-9':  'Asia/Tokyo',
+  'Etc/GMT-10': 'Australia/Brisbane',
+  'Etc/GMT-11': 'Pacific/Noumea',
+  'Etc/GMT-12': 'Pacific/Fiji',
+};
+
+function zoomTimezone(tz) {
+  if (!tz) return 'Asia/Bangkok';
+  if (tz.startsWith('Etc/')) return ZOOM_TZ_BY_ETC[tz] || 'UTC';
+  return tz;
+}
+
+async function createMeeting({ title, startTime, durationMinutes, creds = null, coHostEmails = [], timezone = null }) {
   const token = await getZoomToken(creds);
 
+  // ค่าเริ่มต้นตาม feedback Rev.1 ข้อ 8: ผู้ที่มีลิงก์เข้าห้องได้เลย ไม่ต้องรอ host อนุมัติ
   const settings = {
     join_before_host: false,
-    waiting_room:     true,
+    waiting_room:     false,
   };
 
   // alternative_hosts = co-host ที่ Zoom จะมอบสิทธิ์ host ให้ (ต้องเป็น licensed user ใน Zoom org)
@@ -70,7 +104,8 @@ async function createMeeting({ title, startTime, durationMinutes, creds = null, 
     type:       2,
     start_time: startTime,
     duration:   durationMinutes,
-    timezone:   'Asia/Bangkok',
+    // start_time เป็นเวลาสากลอยู่แล้ว timezone มีผลแค่การแสดงผลในคำเชิญของ Zoom
+    timezone:   zoomTimezone(timezone),
     settings,
   };
 

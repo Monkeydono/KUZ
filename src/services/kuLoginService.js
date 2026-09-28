@@ -24,6 +24,46 @@ function isConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET && REDIRECT_URI);
 }
 
+// บังคับให้ผู้ใช้ยืนยันตัวตนด้วย KU ALL-Login อย่างน้อย 1 ครั้งก่อนจอง (เก็บโปรไฟล์ทำสถิติ)
+// ค่าเริ่มต้น = บังคับเมื่อตั้งค่า KU ALL-Login ครบ
+// เครื่อง dev ตั้ง REQUIRE_KU_PROFILE=false ได้ เพราะ OCS ลงทะเบียน redirect_uri ไว้แค่ของ production
+function isProfileRequired() {
+  const v = (process.env.REQUIRE_KU_PROFILE || '').trim().toLowerCase();
+  if (v === 'false' || v === '0') return false;
+  if (v === 'true' || v === '1') return true;
+  return isConfigured();
+}
+
+// type-person ที่ไม่ให้ใช้งาน (feedback Rev.1 ข้อ 1): 4 = Alumni, 5 = Guest
+const BLOCKED_TYPE_PERSON = new Set(['4', '5']);
+
+function isBlockedTypePerson(typePerson) {
+  return typePerson != null && BLOCKED_TYPE_PERSON.has(String(typePerson).trim());
+}
+
+// claim อาจมาเป็น string หรือ array (Keycloak multi-valued attribute) → เอาค่าแรก
+function claim(info, name) {
+  const v = info[name];
+  if (Array.isArray(v)) return v.length ? String(v[0]) : null;
+  if (v == null || v === '') return null;
+  return String(v);
+}
+
+// ดึงโปรไฟล์ที่ต้องเก็บจาก userinfo — ชื่อ attribute ตามคู่มือ OCS v2.1
+function extractProfile(info) {
+  return {
+    email:           (claim(info, 'google-mail') || claim(info, 'mail') || claim(info, 'email') || '').toLowerCase(),
+    name:            claim(info, 'thainame') || claim(info, 'cn') || claim(info, 'name'),
+    typePerson:      claim(info, 'type-person'),
+    faculty:         claim(info, 'faculty'),
+    facultyCode:     claim(info, 'ku-faculty-code'),
+    department:      claim(info, 'department'),
+    departmentCode:  claim(info, 'ku-department-code'),
+    majorId:         claim(info, 'major-id'),
+    campus:          claim(info, 'campus'),
+  };
+}
+
 // สรุป config ที่ resolve ได้จริง — ไม่มี secret ปนออกมา ใช้ตอนไล่ปัญหากับ OCS
 function describeConfig() {
   return {
@@ -88,6 +128,9 @@ async function fetchUserInfo(accessToken) {
 
 module.exports = {
   isConfigured,
+  isProfileRequired,
+  isBlockedTypePerson,
+  extractProfile,
   describeConfig,
   generatePKCE,
   buildAuthorizeUrl,

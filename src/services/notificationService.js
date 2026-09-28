@@ -30,6 +30,23 @@ const formatDate = (iso) => new Date(iso).toLocaleDateString('th-TH');
 const formatTime = (iso) =>
   new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
 
+// เวลาในเขตเวลาของผู้เข้าร่วมต่างชาติ — n8n แสดงเพิ่มในอีเมลเมื่อ guest_timezone ไม่ว่าง
+// ตัวอย่าง guest_time: "Mon, Aug 26, 2026, 10:00 AM - 10:30 AM GMT+9"
+function guestFields(booking) {
+  const tz = booking.guest_timezone;
+  if (!tz) return { guest_timezone: null, guest_time: null };
+  try {
+    const opts = { timeZone: tz, hour: 'numeric', minute: '2-digit' };
+    const day = new Date(booking.start_time).toLocaleDateString('en-US',
+      { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    const s = new Date(booking.start_time).toLocaleTimeString('en-US', opts);
+    const e = new Date(booking.end_time).toLocaleTimeString('en-US', { ...opts, timeZoneName: 'short' });
+    return { guest_timezone: tz, guest_time: `${day}, ${s} - ${e}` };
+  } catch (err) {
+    return { guest_timezone: tz, guest_time: null };
+  }
+}
+
 async function sendBookingConfirmation(booking) {
   await sendWebhook(BOOKING_URL, {
     type:      'booking_created',
@@ -39,6 +56,7 @@ async function sendBookingConfirmation(booking) {
     date:      formatDate(booking.start_time),
     time:      `${formatTime(booking.start_time)} - ${formatTime(booking.end_time)}`,
     zoom_link: booking.zoom_join_url,
+    ...guestFields(booking),
   }, 'booking_created');
 }
 
@@ -63,6 +81,7 @@ async function sendReminderNotification(booking) {
     time:      `${formatTime(booking.start_time)} - ${formatTime(booking.end_time)}`,
     zoom_link: booking.zoom_join_url,
     minutes_until: 15,
+    ...guestFields(booking),
   }, 'booking_reminder');
 }
 
@@ -77,14 +96,19 @@ async function sendCoHostInvitation(booking, coHostEmail) {
     time:        `${formatTime(booking.start_time)} - ${formatTime(booking.end_time)}`,
     zoom_link:   booking.zoom_join_url,
     booking_id:  booking.id,
+    ...guestFields(booking),
   }, 'cohost_invitation');
 }
 
 // แจ้ง staff/admin เมื่อมีคำขอจองห้อง Pro plan รออนุมัติ
 // approvers = [{ email, name }] — n8n loop ส่งทีละคน
-async function sendPendingApprovalRequest(booking, approvers) {
+// isReminder = เตือนซ้ำเพราะคำขอค้าง (cron) — n8n ใช้ปรับหัวเรื่องอีเมลได้
+async function sendPendingApprovalRequest(booking, approvers, { isReminder = false } = {}) {
+  const hoursUntilStart = Math.max(0, Math.round((new Date(booking.start_time) - Date.now()) / 36e5));
   await sendWebhook(PENDING_APPROVAL_URL, {
     type:        'booking_pending_approval',
+    is_reminder: isReminder,
+    hours_until_start: hoursUntilStart,
     booking_id:  booking.id,
     requester_email: booking.user_email,
     requester_name:  booking.user_name,
@@ -96,7 +120,7 @@ async function sendPendingApprovalRequest(booking, approvers) {
     co_hosts:    booking.co_host_emails || [],
     notes:       booking.notes || null,
     approvers:   approvers,
-  }, 'booking_pending_approval');
+  }, isReminder ? 'booking_pending_reminder' : 'booking_pending_approval');
 }
 
 // แจ้ง user เมื่อ booking ถูก approve หรือ reject — ใช้ webhook เดียว branch ตาม "decision"
@@ -113,6 +137,7 @@ async function sendApprovalDecision(booking, decision, reason = null) {
     zoom_link: decision === 'approved' ? booking.zoom_join_url : null,
     reason:    decision === 'rejected' ? reason : null,
     booking_id: booking.id,
+    ...guestFields(booking),
   }, `booking_${decision}`);
 }
 

@@ -5,6 +5,7 @@ import KUEmblem from './KUEmblem'
 import NotificationBell from './NotificationBell'
 import { useUser } from '../useUser'
 import { useIsMobile } from '../useIsMobile'
+import { USER_MANUAL_URL } from '../links'
 
 function getGreeting() {
   const h = new Date().getHours()
@@ -44,7 +45,11 @@ function Navbar() {
     }
   }
 
-  const links = [
+  // guest (ไม่มี token) เห็นเฉพาะปฏิทิน + ปุ่มเข้าสู่ระบบ
+  const isGuest = !localStorage.getItem('token')
+  const links = isGuest ? [
+    { path: '/calendar',    label: 'ปฏิทิน' },
+  ] : [
     { path: '/calendar',    label: 'ปฏิทิน' },
     { path: '/book',        label: 'จองห้อง' },
     { path: '/my-bookings', label: 'การจองของฉัน' },
@@ -101,12 +106,27 @@ function Navbar() {
                     {link.label}
                   </button>
                 ))}
-                <button
-                  style={s.mobileMenuLogout}
-                  onClick={() => { setMenuOpen(false); setShowLogout(true) }}
+                <a
+                  style={{ ...s.mobileMenuItem, textDecoration: 'none' }}
+                  href={USER_MANUAL_URL} target='_blank' rel='noopener noreferrer'
                 >
-                  ออกจากระบบ
-                </button>
+                  คู่มือการใช้งาน
+                </a>
+                {isGuest ? (
+                  <button
+                    style={{ ...s.mobileMenuItem, ...s.mobileMenuItemActive }}
+                    onClick={() => { setMenuOpen(false); navigate('/login') }}
+                  >
+                    เข้าสู่ระบบ
+                  </button>
+                ) : (
+                  <button
+                    style={s.mobileMenuLogout}
+                    onClick={() => { setMenuOpen(false); setShowLogout(true) }}
+                  >
+                    ออกจากระบบ
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -132,10 +152,23 @@ function Navbar() {
               {isActive(link.path) && <div style={s.activeDot} />}
             </span>
           ))}
+          <a
+            style={{ ...s.navLink, textDecoration: 'none' }}
+            className='ku-nav-link'
+            href={USER_MANUAL_URL} target='_blank' rel='noopener noreferrer'
+          >
+            คู่มือการใช้งาน
+          </a>
           {user && <NotificationBell />}
-          <span style={s.navBtn} className="ku-nav-btn" onClick={() => setShowLogout(true)}>
-            ออกจากระบบ
-          </span>
+          {isGuest ? (
+            <span style={s.navBtn} className="ku-nav-btn" onClick={() => navigate('/login')}>
+              เข้าสู่ระบบ
+            </span>
+          ) : (
+            <span style={s.navBtn} className="ku-nav-btn" onClick={() => setShowLogout(true)}>
+              ออกจากระบบ
+            </span>
+          )}
         </div>
       )}
 

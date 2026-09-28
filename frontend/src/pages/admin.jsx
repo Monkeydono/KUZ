@@ -4,6 +4,7 @@ import { Calendar, Users, BarChart3, AlertCircle, X, Search, Trash2, Shield, Dow
 import api from '../api'
 import Navbar from '../components/Navbar'
 import { useUser } from '../useUser'
+import { useDialog } from '../components/Dialog'
 
 async function downloadCSV(path, filename) {
   const res = await api.get(path, { responseType: 'blob' })
@@ -94,34 +95,96 @@ function TabBtn({ icon, label, active, onClick }) {
   )
 }
 
+// ประเภทบุคคลจาก KU ALL-Login — คู่มือ OCS หน้า 16
+const TYPE_PERSON_LABELS = {
+  '1': 'อาจารย์', '2': 'บุคลากร', '3': 'นิสิต', '4': 'ศิษย์เก่า', '5': 'บุคคลภายนอก',
+  '6': 'บัญชีอีเมลหน่วยงาน', '7': 'นิสิตหลักสูตรศาสตร์แห่งแผ่นดิน', '8': 'นิสิตข้ามสถาบัน',
+  '101': 'อาจารย์ รร.สาธิตฯ', '102': 'บุคลากร รร.สาธิตฯ', '103': 'นักเรียน รร.สาธิตฯ',
+  '111': 'อาจารย์ รร.สาธิตฯ กำแพงแสน', '112': 'บุคลากร รร.สาธิตฯ กำแพงแสน', '113': 'นักเรียน รร.สาธิตฯ กำแพงแสน',
+}
+const typePersonLabel = (t) => t == null ? 'ยังไม่ยืนยันตัวตนผ่าน KU ALL-Login' : (TYPE_PERSON_LABELS[t] || `ประเภท ${t}`)
+
+const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return ymdLocal(d) }
+const RANGE_PRESETS = [
+  { label: '7 วัน',  days: 7 },
+  { label: '30 วัน', days: 30 },
+  { label: '90 วัน', days: 90 },
+  { label: '1 ปี',   days: 365 },
+]
+const fmtThaiDate = (ymd) => new Date(`${ymd}T00:00:00`).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: '2-digit' })
+
+// แกน y: หาเลขกลม ๆ ที่ครอบค่าสูงสุด แล้วแบ่งเป็น 4 ช่วงเท่ากัน (ค่าเป็นจำนวนเต็มเสมอ)
+function niceTicks(max) {
+  if (max <= 4) return [0, 1, 2, 3, 4].slice(0, Math.max(max, 1) + 1)
+  const step = Math.ceil(max / 4 / Math.pow(10, Math.floor(Math.log10(max / 4)))) * Math.pow(10, Math.floor(Math.log10(max / 4)))
+  return [0, step, step * 2, step * 3, step * 4]
+}
+
 function Overview() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [range, setRange] = useState({ from: daysAgo(29), to: daysAgo(0) })
 
   useEffect(() => {
-    api.get('/admin/stats')
-      .then(res => setData(res.data))
-      .finally(() => setLoading(false))
-  }, [])
+    let cancelled = false
+    api.get('/admin/stats', { params: range })
+      .then(res => { if (!cancelled) { setData(res.data); setError('') } })
+      .catch(err => { if (!cancelled) setError(err.response?.data?.error || 'โหลดสถิติไม่สำเร็จ') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [range])
 
-  if (loading) return <div style={s.loading}>กำลังโหลด...</div>
-  if (!data) return null
+  if (loading && !data) return <div style={s.loading}>กำลังโหลด...</div>
+  if (!data) return error ? <p style={s.empty}>{error}</p> : null
 
-  const { totals, byDay, byStatus, topUsers, peakHours } = data
+  const { totals, byDay, byStatus, topUsers, peakHours, byType = [] } = data
+  const rangeLabel = `${fmtThaiDate(data.range.from)} – ${fmtThaiDate(data.range.to)}`
+  const activePreset = RANGE_PRESETS.find(p => range.to === daysAgo(0) && range.from === daysAgo(p.days - 1))
 
   return (
     <div style={s.section}>
+      {/* ตัวกรองช่วงวันที่ — แถวเดียวเหนือกราฟทั้งหมด (feedback Rev.1 ข้อ 5) */}
+      <div style={s.rangeBar}>
+        <span style={s.rangeTitle}>ช่วงวันที่</span>
+        <input
+          type="date" style={s.rangeInput} value={range.from} max={range.to}
+          onChange={e => e.target.value && setRange(r => ({ ...r, from: e.target.value }))}
+          aria-label="วันที่เริ่ม"
+        />
+        <span style={{ color: '#888' }}>→</span>
+        <input
+          type="date" style={s.rangeInput} value={range.to} min={range.from}
+          onChange={e => e.target.value && setRange(r => ({ ...r, to: e.target.value }))}
+          aria-label="วันที่สิ้นสุด"
+        />
+        <div style={s.presetGroup}>
+          {RANGE_PRESETS.map(p => (
+            <button
+              key={p.days}
+              style={{ ...s.presetBtn, ...(activePreset === p ? s.presetBtnActive : {}) }}
+              onClick={() => setRange({ from: daysAgo(p.days - 1), to: daysAgo(0) })}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {error && <span style={{ color: '#c62828', fontSize: 12 }}>{error}</span>}
+      </div>
+
       <div style={s.statsGrid}>
-        <StatCard label="กำลังจะมาถึง" value={totals.upcoming} accent="#1FBA7C" />
-        <StatCard label="วันนี้"        value={totals.today} />
-        <StatCard label="7 วันล่าสุด"   value={totals.week} />
-        <StatCard label="30 วันล่าสุด"  value={totals.month} />
-        <StatCard label="ยกเลิก/30 วัน" value={totals.cancelled_month} accent="#c62828" />
-        <StatCard label="ผู้ใช้ทั้งหมด"  value={`${totals.users_total} (${totals.admins_total} admin)`} />
+        <StatCard label="กำลังจะมาถึง"   value={totals.upcoming} accent="#1FBA7C" />
+        <StatCard label="วันนี้"          value={totals.today} />
+        <StatCard label="รออนุมัติ"       value={totals.pending} accent={+totals.pending > 0 ? '#b45309' : undefined} />
+        <StatCard label="จองในช่วงที่เลือก" value={totals.range_booked} />
+        <StatCard label="ชั่วโมงประชุมรวม"  value={totals.range_hours} />
+        <StatCard label="ยกเลิกในช่วงที่เลือก" value={totals.range_cancelled} accent="#c62828" />
+        <StatCard label="ผู้ใช้ทั้งหมด"     value={`${totals.users_total} (${totals.admins_total} admin)`} />
       </div>
 
       <ChartCard
-        title="การจองรายวัน (14 วันล่าสุด)"
+        title={`การจองรายวัน · ${rangeLabel}`}
         rightSlot={
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: 11 }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -136,18 +199,39 @@ function Overview() {
         }
       >
         <BarChart data={byDay} />
+        <details style={s.tableToggle}>
+          <summary style={s.tableSummary}>ดูเป็นตาราง</summary>
+          <table style={s.table}>
+            <thead>
+              <tr><th style={s.th}>วันที่</th><th style={{ ...s.th, textAlign: 'right' }}>จอง</th><th style={{ ...s.th, textAlign: 'right' }}>ยกเลิก</th></tr>
+            </thead>
+            <tbody>
+              {byDay.filter(d => +d.created || +d.cancelled).map(d => (
+                <tr key={d.day}>
+                  <td style={s.td}>{fmtThaiDate(d.day)}</td>
+                  <td style={{ ...s.td, textAlign: 'right' }}>{d.created}</td>
+                  <td style={{ ...s.td, textAlign: 'right' }}>{d.cancelled}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
       </ChartCard>
 
       <div style={s.row2}>
-        <ChartCard title="ชั่วโมงนิยม">
+        <ChartCard title="ช่วงเวลาที่เริ่มประชุม">
           <HourChart data={peakHours} />
         </ChartCard>
-        <ChartCard title="สถานะ (30 วัน)">
+        <ChartCard title="สถานะการจอง">
           <PieList data={byStatus} />
         </ChartCard>
       </div>
 
-      <ChartCard title="Top ผู้ใช้ (30 วัน)">
+      <ChartCard title="การใช้งานแยกตามประเภทบุคคล">
+        <TypeTable data={byType} />
+      </ChartCard>
+
+      <ChartCard title="ผู้ใช้ที่จองมากที่สุด">
         {topUsers.length === 0 ? (
           <p style={s.empty}>ยังไม่มีข้อมูล</p>
         ) : (
@@ -195,62 +279,138 @@ function ChartCard({ title, children, rightSlot }) {
   )
 }
 
-// SVG bar chart — ไม่พึ่ง library
-function BarChart({ data }) {
-  if (!data || data.length === 0) return <p style={s.empty}>ยังไม่มีข้อมูล</p>
-  const max = Math.max(...data.map(d => Math.max(+d.created, +d.cancelled)), 1)
-  const W = 680, H = 200, pad = 30
-  const innerW = W - pad * 2
-  const barGroupW = innerW / data.length
+// แกน y พร้อมตัวเลข + เส้น grid บาง ๆ + ชื่อแกน (feedback Rev.1 ข้อ 5: แกน y หมายถึงอะไร ใส่ตัวเลข)
+function YAxis({ ticks, top, bottom, left, right, title }) {
+  const max = ticks[ticks.length - 1] || 1
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 200 }}>
-      <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="#e1e7e1" />
-      {data.map((d, i) => {
-        const x  = pad + i * barGroupW + barGroupW * 0.15
-        const bw = barGroupW * 0.32
-        const hC = ((+d.created)   / max) * (H - pad * 2)
-        const hX = ((+d.cancelled) / max) * (H - pad * 2)
+    <g>
+      {ticks.map(t => {
+        const y = bottom - (t / max) * (bottom - top)
         return (
-          <g key={d.day}>
-            <rect x={x}        y={H - pad - hC} width={bw} height={hC} fill="#1FBA7C" rx={2} />
-            <rect x={x + bw + 2} y={H - pad - hX} width={bw} height={hX} fill="#c62828" rx={2} />
-            <text x={x + bw + 1} y={H - pad + 14} fontSize="9" fill="#888" textAnchor="middle">
-              {new Date(d.day).getDate()}
-            </text>
+          <g key={t}>
+            <line x1={left} y1={y} x2={right} y2={y} stroke={t === 0 ? '#cfd8cf' : '#eef2ee'} strokeWidth="1" />
+            <text x={left - 6} y={y + 3} fontSize="10" fill="#666" textAnchor="end">{t}</text>
           </g>
         )
       })}
-    </svg>
+      <text
+        x={12} y={(top + bottom) / 2} fontSize="10" fill="#666" textAnchor="middle"
+        transform={`rotate(-90 12 ${(top + bottom) / 2})`}
+      >
+        {title}
+      </text>
+    </g>
   )
 }
 
-function HourChart({ data }) {
-  if (!data || data.length === 0) return <p style={s.empty}>ยังไม่มีข้อมูล</p>
-  const hours = Array.from({ length: 24 }, (_, h) => {
-    const found = data.find(d => +d.hour === h)
-    return { hour: h, count: found ? +found.count : 0 }
-  })
-  const max = Math.max(...hours.map(h => h.count), 1)
-  const W = 360, H = 180, pad = 24
-  const bw = (W - pad * 2) / 24
+// SVG bar chart — ไม่พึ่ง library · hover ที่แท่งเพื่อดูตัวเลข
+function BarChart({ data }) {
+  if (!data || data.length === 0 || data.every(d => !+d.created && !+d.cancelled)) {
+    return <p style={s.empty}>ไม่มีการจองในช่วงวันที่นี้</p>
+  }
+  const ticks = niceTicks(Math.max(...data.map(d => Math.max(+d.created, +d.cancelled)), 1))
+  const max = ticks[ticks.length - 1]
+  const W = 720, H = 230, left = 48, right = 12, top = 12, bottom = H - 30
+  const groupW = (W - left - right) / data.length
+  // ป้ายวันที่ใต้แกน: แสดงไม่เกิน ~15 ป้าย กันซ้อนกัน
+  const labelEvery = Math.ceil(data.length / 15)
+  const bw = Math.max(Math.min(groupW * 0.36, 14), 1)
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 180 }}>
-      <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="#e1e7e1" />
-      {hours.map(h => {
-        const x = pad + h.hour * bw
-        const bh = (h.count / max) * (H - pad * 2)
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="กราฟจำนวนการจองรายวัน">
+      <YAxis ticks={ticks} top={top} bottom={bottom} left={left} right={W - right} title="จำนวนการจอง (ครั้ง)" />
+      {data.map((d, i) => {
+        const cx = left + i * groupW + groupW / 2
+        const hC = (+d.created / max) * (bottom - top)
+        const hX = (+d.cancelled / max) * (bottom - top)
+        const date = new Date(`${d.day}T00:00:00`)
         return (
-          <g key={h.hour}>
-            <rect x={x + 1} y={H - pad - bh} width={bw - 2} height={bh} fill="#03A96B" rx={1.5} />
-            {h.hour % 3 === 0 && (
-              <text x={x + bw / 2} y={H - pad + 12} fontSize="9" fill="#888" textAnchor="middle">
-                {h.hour}
+          <g key={d.day}>
+            <title>{`${fmtThaiDate(d.day)} · จอง ${d.created} · ยกเลิก ${d.cancelled}`}</title>
+            {/* พื้นที่ hover ใหญ่กว่าแท่ง */}
+            <rect x={cx - groupW / 2} y={top} width={groupW} height={bottom - top} fill="transparent" />
+            {hC > 0 && <rect x={cx - bw - 1} y={bottom - hC} width={bw} height={hC} fill="#1FBA7C" rx={2} />}
+            {hX > 0 && <rect x={cx + 1} y={bottom - hX} width={bw} height={hX} fill="#c62828" rx={2} />}
+            {i % labelEvery === 0 && (
+              <text x={cx} y={bottom + 14} fontSize="9" fill="#888" textAnchor="middle">
+                {date.getDate()}{date.getDate() === 1 || i === 0 ? ` ${date.toLocaleDateString('th-TH', { month: 'short' })}` : ''}
               </text>
             )}
           </g>
         )
       })}
+      <text x={(left + W - right) / 2} y={H - 2} fontSize="10" fill="#666" textAnchor="middle">วันที่ประชุม</text>
     </svg>
+  )
+}
+
+function HourChart({ data }) {
+  if (!data || data.length === 0) return <p style={s.empty}>ไม่มีการจองในช่วงวันที่นี้</p>
+  // ระบบจองได้ 08:00-24:00 → แสดงเฉพาะช่วงนี้
+  const hours = Array.from({ length: 16 }, (_, i) => {
+    const h = i + 8
+    const found = data.find(d => +d.hour === h)
+    return { hour: h, count: found ? +found.count : 0 }
+  })
+  const ticks = niceTicks(Math.max(...hours.map(h => h.count), 1))
+  const max = ticks[ticks.length - 1]
+  const W = 380, H = 210, left = 44, right = 8, top = 10, bottom = H - 30
+  const bw = (W - left - right) / hours.length
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="กราฟจำนวนการจองตามชั่วโมงที่เริ่มประชุม">
+      <YAxis ticks={ticks} top={top} bottom={bottom} left={left} right={W - right} title="จำนวนการจอง (ครั้ง)" />
+      {hours.map((h, i) => {
+        const x = left + i * bw
+        const bh = (h.count / max) * (bottom - top)
+        return (
+          <g key={h.hour}>
+            <title>{`${String(h.hour).padStart(2, '0')}:00–${String(h.hour + 1).padStart(2, '0')}:00 · ${h.count} ครั้ง`}</title>
+            <rect x={x} y={top} width={bw} height={bottom - top} fill="transparent" />
+            {bh > 0 && <rect x={x + 1} y={bottom - bh} width={bw - 2} height={bh} fill="#03A96B" rx={2} />}
+            {h.hour % 2 === 0 && (
+              <text x={x + bw / 2} y={bottom + 12} fontSize="9" fill="#888" textAnchor="middle">{h.hour}</text>
+            )}
+          </g>
+        )
+      })}
+      <text x={(left + W - right) / 2} y={H - 2} fontSize="10" fill="#666" textAnchor="middle">เวลาเริ่มประชุม (นาฬิกา)</text>
+    </svg>
+  )
+}
+
+// ตารางแยกตามประเภทบุคคล — แถบสีเดียวแสดงสัดส่วนจำนวนการจอง
+function TypeTable({ data }) {
+  if (!data || data.length === 0) return <p style={s.empty}>ไม่มีการจองในช่วงวันที่นี้</p>
+  const maxBookings = Math.max(...data.map(d => +d.bookings), 1)
+  return (
+    <div style={{ overflowX: 'auto' }}>
+    <table style={{ ...s.table, minWidth: 520 }}>
+      <thead>
+        <tr>
+          <th style={s.th}>ประเภทบุคคล</th>
+          <th style={{ ...s.th, width: '34%' }}>จำนวนการจอง</th>
+          <th style={{ ...s.th, textAlign: 'right' }}>ผู้ใช้</th>
+          <th style={{ ...s.th, textAlign: 'right' }}>ชั่วโมงประชุม</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.map(d => (
+          <tr key={d.type_person ?? 'none'}>
+            <td style={d.type_person == null ? s.tdMuted : s.td}>{typePersonLabel(d.type_person)}</td>
+            <td style={s.td}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ flex: 1, height: 8, background: '#eef2ee', borderRadius: 4 }}>
+                  <div style={{ width: `${(+d.bookings / maxBookings) * 100}%`, height: '100%', background: '#03A96B', borderRadius: 4 }} />
+                </div>
+                <span style={{ minWidth: 28, textAlign: 'right', fontWeight: 600 }}>{d.bookings}</span>
+              </div>
+            </td>
+            <td style={{ ...s.td, textAlign: 'right' }}>{d.users}</td>
+            <td style={{ ...s.td, textAlign: 'right' }}>{d.hours}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    </div>
   )
 }
 
@@ -279,6 +439,7 @@ function PieList({ data }) {
 }
 
 function Bookings({ isAdmin, initialStatus = '', focusBookingId = null }) {
+  const dialog = useDialog()
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [filters, setFilters] = useState({ status: initialStatus, search: '' })
@@ -348,14 +509,22 @@ function Bookings({ isAdmin, initialStatus = '', focusBookingId = null }) {
     return () => { clearTimeout(timer); clearTimeout(fade) }
   }, [highlightId, loading, items])
 
-  const approve = async (id) => {
-    if (!confirm('อนุมัติการจองนี้?')) return
+  const approve = async (b) => {
+    const when = new Date(b.start_time).toLocaleString('th-TH', {
+      dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok',
+    })
+    const ok = await dialog.confirm({
+      title: 'อนุมัติการจองนี้?',
+      message: `${b.title}\n${when} น.${b.room_name ? ` · ${b.room_name}` : ''}\nผู้จอง: ${b.user_name || b.user_email || '-'}\n\nระบบจะสร้างห้อง Zoom และแจ้งผู้จองทางอีเมล`,
+      confirmText: 'อนุมัติ',
+    })
+    if (!ok) return
     setActionLoading(true)
     try {
-      await api.post(`/admin/bookings/${id}/approve`)
+      await api.post(`/admin/bookings/${b.id}/approve`)
       fetchItems()
     } catch (err) {
-      alert(err.response?.data?.error || 'อนุมัติไม่สำเร็จ')
+      await dialog.alert({ title: 'อนุมัติไม่สำเร็จ', message: err.response?.data?.error || 'กรุณาลองใหม่อีกครั้ง', tone: 'danger' })
     } finally { setActionLoading(false) }
   }
 
@@ -368,7 +537,7 @@ function Bookings({ isAdmin, initialStatus = '', focusBookingId = null }) {
       setRejectReason('')
       fetchItems()
     } catch (err) {
-      alert(err.response?.data?.error || 'ปฏิเสธไม่สำเร็จ')
+      await dialog.alert({ title: 'ปฏิเสธไม่สำเร็จ', message: err.response?.data?.error || 'กรุณาลองใหม่อีกครั้ง', tone: 'danger' })
     } finally { setActionLoading(false) }
   }
 
@@ -511,7 +680,7 @@ function Bookings({ isAdmin, initialStatus = '', focusBookingId = null }) {
                         <>
                           <button
                             style={{ ...s.iconBtn, color: '#03A96B', marginRight: 6 }}
-                            onClick={() => approve(b.id)}
+                            onClick={() => approve(b)}
                             disabled={actionLoading}
                             title="อนุมัติ"
                           >
@@ -962,6 +1131,7 @@ function RoomsTab() {
 }
 
 function RoomsList() {
+  const dialog = useDialog()
   const [items, setItems] = useState([])
   const [zooms, setZooms] = useState([])
   const [loading, setLoading] = useState(true)
@@ -1019,12 +1189,18 @@ function RoomsList() {
   }
 
   const deactivate = async (room) => {
-    if (!confirm(`ปิดใช้งานห้อง "${room.name}"? booking เก่ายังคงอยู่ แต่ห้ามจองใหม่`)) return
+    const ok = await dialog.confirm({
+      title: `ปิดใช้งานห้อง "${room.name}"?`,
+      message: 'การจองเดิมยังคงอยู่ แต่จะจองห้องนี้ใหม่ไม่ได้',
+      confirmText: 'ปิดใช้งาน',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/admin/rooms/${room.id}`)
       await fetchAll()
     } catch (err) {
-      alert(err.response?.data?.error || 'ปิดใช้งานไม่สำเร็จ')
+      await dialog.alert({ title: 'ปิดใช้งานไม่สำเร็จ', message: err.response?.data?.error || 'กรุณาลองใหม่อีกครั้ง', tone: 'danger' })
     }
   }
 
@@ -1185,6 +1361,7 @@ function RoomsList() {
 }
 
 function ZoomAccountsList() {
+  const dialog = useDialog()
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(null)
@@ -1282,12 +1459,18 @@ function ZoomAccountsList() {
   }
 
   const del = async (z) => {
-    if (!confirm(`ลบ Zoom account "${z.label}"?`)) return
+    const ok = await dialog.confirm({
+      title: `ลบ Zoom account "${z.label}"?`,
+      message: 'ลบแล้วกู้คืนไม่ได้ ลบได้เฉพาะบัญชีที่ไม่มีห้องผูกอยู่',
+      confirmText: 'ลบ',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/admin/zoom-accounts/${z.id}`)
       fetchAll()
     } catch (err) {
-      alert(err.response?.data?.error || 'ลบไม่สำเร็จ')
+      await dialog.alert({ title: 'ลบไม่สำเร็จ', message: err.response?.data?.error || 'กรุณาลองใหม่อีกครั้ง', tone: 'danger' })
     }
   }
 
@@ -1703,6 +1886,23 @@ function AuditTab() {
 }
 
 const s = {
+  rangeBar: {
+    display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+    background: 'white', border: '1px solid #e1e7e1', borderRadius: 12, padding: '12px 16px',
+  },
+  rangeTitle: { fontSize: 13, fontWeight: 600, color: '#014A32' },
+  rangeInput: {
+    padding: '6px 10px', border: '1px solid #d5ddd5', borderRadius: 8,
+    fontSize: 13, fontFamily: 'inherit', color: '#1a1a1a',
+  },
+  presetGroup: { display: 'flex', gap: 6, marginLeft: 'auto', flexWrap: 'wrap' },
+  presetBtn: {
+    padding: '6px 12px', borderRadius: 16, border: '1px solid #d5ddd5',
+    background: 'white', color: '#333', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+  },
+  presetBtnActive: { background: '#03A96B', borderColor: '#03A96B', color: 'white', fontWeight: 600 },
+  tableToggle: { marginTop: 8 },
+  tableSummary: { fontSize: 12, color: '#028152', cursor: 'pointer' },
   root: { minHeight: '100vh', background: '#f4f6f4' },
   body: { maxWidth: 1100, margin: '0 auto', padding: '24px 16px' },
   header: { marginBottom: 24 },

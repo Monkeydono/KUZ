@@ -68,7 +68,15 @@ const authPathLimiter = (req, res, next) =>
   (req.path === '/me' ? apiLimiter : authLimiter)(req, res, next);
 
 app.use('/auth',          authPathLimiter, authRoutes);
-app.use('/bookings',      apiLimiter, authenticate, bookingRoutes);
+// guest (ยังไม่ login) ดูปฏิทินได้ — เปิดเฉพาะ GET รายการห้องและช่วงเวลาที่ถูกจอง
+// ส่วนอื่นของ /bookings (จอง ยกเลิก เข้าห้อง) ยังต้อง login
+const GUEST_BOOKING_PATHS = new Set(['/rooms', '/available']);
+const bookingsAuth = (req, res, next) =>
+  (req.method === 'GET' && GUEST_BOOKING_PATHS.has(req.path)
+    ? authenticate.optionalAuthenticate
+    : authenticate)(req, res, next);
+
+app.use('/bookings',      apiLimiter, bookingsAuth, bookingRoutes);
 app.use('/admin',         apiLimiter, authenticate, adminRoutes);
 app.use('/notifications', apiLimiter, authenticate, notificationRoutes);
 

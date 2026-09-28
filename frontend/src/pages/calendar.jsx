@@ -1,9 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AlertCircle, Check, X } from 'lucide-react'
 import api from '../api'
 import { useUser } from '../useUser'
 import { useIsMobile } from '../useIsMobile'
 import Navbar from '../components/Navbar'
+import TimezoneField from '../components/TimezoneField'
+import { utcToZoned, zonedRange, bangkokRuleError } from '../tz'
 
 const FIRST_HOUR = 8
 const LAST_HOUR = 24
@@ -13,8 +16,14 @@ const TOP_PAD = 14
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+
 function Calendar() {
+  const navigate = useNavigate()
   const { user, isAdmin } = useUser()
+  // guest = ยังไม่ login → ดูปฏิทินได้ แต่กดจองแล้วพาไปหน้าเข้าสู่ระบบ
+  const isGuest = !localStorage.getItem('token')
   const role = user?.role || 'student'
   const canPickPriorityRoom = role === 'admin' || role === 'priority'
   const isMobile = useIsMobile()
@@ -22,6 +31,9 @@ function Calendar() {
   const today = new Date()
 
   const [currentDate, setCurrentDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
+  // กดที่ชื่อเดือน/ปีเพื่อเลือกเดือนและปีได้ตรง ๆ (feedback Rev.1 ข้อ 4)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerYear, setPickerYear] = useState(today.getFullYear())
   const [selectedDate, setSelectedDate] = useState(today)
   const [bookedSlots, setBookedSlots] = useState([])
   const [loading, setLoading] = useState(false)
@@ -49,7 +61,7 @@ function Calendar() {
 
   const [modalHour, setModalHour] = useState(null)
   const [modalForm, setModalForm] = useState({
-    title: '', startTime: '', endTime: '', coHosts: '', notes: '',
+    title: '', startTime: '', endTime: '', coHosts: '', notes: '', guestTimezone: '', tzDate: '',
     recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
   })
   const [modalLoading, setModalLoading] = useState(false)
@@ -82,6 +94,16 @@ function Calendar() {
 
   useEffect(() => {
     if (selectedCapacity != null) fetchBookings(selectedDate)
+  }, [selectedDate, selectedCapacity])
+
+  // โหลดใหม่เมื่อกลับมาที่แท็บนี้ — กันปฏิทินค้างข้อมูลเก่า เช่น ไปยกเลิกการจองในอีกแท็บแล้วกลับมา
+  useEffect(() => {
+    if (selectedCapacity == null) return
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchBookings(selectedDate)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
   }, [selectedDate, selectedCapacity])
 
   const fetchBookings = async (date) => {
@@ -147,6 +169,8 @@ function Calendar() {
 
   const openModal = (hour) => {
     if (isHourFullyBooked(hour)) return
+    if (isGuest) { navigate('/login?error=guest_book'); return }
+    if (user?.needs_ku_profile) { navigate('/login?error=need_kulogin'); return }
 
     // Free plan (1 ห้อง/tier): จำกัด earliest/latest โดยอิง booking ที่มี
     // Pro plan (หลายห้อง): ยังเหลือห้องอยู่ → ให้จองทั้งช่วง hour..hour+1 ได้เลย
@@ -177,6 +201,8 @@ function Calendar() {
       endTime: floatToHHMM(defaultEnd),
       coHosts: '',
       notes: '',
+      guestTimezone: '',
+      tzDate: ymd(selectedDate),
       recurringEnabled: false, recurringFreq: 'weekly', recurringCount: 4,
     })
     setModalError('')
@@ -199,9 +225,12 @@ function Calendar() {
       setModalError('กรุณาระบุเวลาเริ่มและเวลาสิ้นสุด')
       return
     }
-    if (modalForm.startTime < '08:00' || modalForm.startTime > '23:59' ||
-        modalForm.endTime   < '08:00' || modalForm.endTime   > '23:59') {
-      setModalError('เวลาจองอนุญาตเฉพาะ 08:00 - 24:00')
+    if (!modalRange) {
+      setModalError('กรุณาระบุวันและเวลาให้ครบ')
+      return
+    }
+    if (modalRuleError) {
+      setModalError(`เวลาจองอนุญาตเฉพาะ 08:00 - 24:00 เวลาไทย · ${modalRuleError}`)
       return
     }
     // ห้อง Pro plan (capacity > 100) ต้องระบุเหตุผล
@@ -210,9 +239,9 @@ function Calendar() {
       return
     }
 
-    const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth()+1).padStart(2,'0')}-${String(selectedDate.getDate()).padStart(2,'0')}`
-    const startTime = `${dateStr}T${modalForm.startTime}:00+07:00`
-    const endTime   = `${dateStr}T${modalForm.endTime}:00+07:00`
+    // เวลาที่กรอกเป็นเวลาของเขตที่เลือก → ส่งเป็นเวลาสากล
+    const startTime = modalRange.start.toISOString()
+    const endTime   = modalRange.end.toISOString()
     const coHostEmails = modalForm.coHosts
       .split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
 
@@ -221,6 +250,7 @@ function Calendar() {
       const payload = { title: modalForm.title, startTime, endTime, coHostEmails }
       if (selectedCapacity != null) payload.capacity = selectedCapacity
       if (modalForm.notes.trim()) payload.notes = modalForm.notes.trim()
+      if (modalForm.guestTimezone) payload.guestTimezone = modalForm.guestTimezone
       if (modalForm.recurringEnabled && modalForm.recurringCount > 1) {
         payload.recurring = {
           freq: modalForm.recurringFreq,
@@ -272,13 +302,20 @@ function Calendar() {
   const nowHourFloat = today.getHours() + today.getMinutes() / 60
   const showNow = isViewingToday && nowHourFloat >= FIRST_HOUR && nowHourFloat <= LAST_HOUR
 
-  const calcModalDuration = () => {
-    if (!modalForm.startTime || !modalForm.endTime) return null
-    const [sh, sm] = modalForm.startTime.split(':').map(Number)
-    const [eh, em] = modalForm.endTime.split(':').map(Number)
-    return (eh * 60 + em) - (sh * 60 + sm)
+  // ช่วงเวลาที่กรอก (ตามเขตเวลาที่เลือก) เป็นเวลาสากล + ตรวจกติกา 08:00-24:00 เวลาไทย
+  const modalRange = modalHour !== null
+    ? zonedRange(modalForm.tzDate, modalForm.startTime, modalForm.endTime, modalForm.guestTimezone)
+    : null
+  const modalRuleError = modalRange ? bangkokRuleError(modalRange.start, modalRange.end) : null
+  const modalDuration = modalRange ? Math.round((modalRange.end - modalRange.start) / 60000) : null
+
+  // เปลี่ยนเขตเวลา → แปลงเวลาที่กรอกไว้ให้เป็นเวลาเดียวกันในเขตใหม่
+  const changeModalTimezone = (tz) => {
+    if (!modalRange) { setModalForm({ ...modalForm, guestTimezone: tz }); return }
+    const s = utcToZoned(modalRange.start, tz)
+    const e = utcToZoned(modalRange.end, tz)
+    setModalForm({ ...modalForm, guestTimezone: tz, tzDate: s.ymd, startTime: s.hhmm, endTime: e.hhmm })
   }
-  const modalDuration = calcModalDuration()
   // ห้อง Pro plan ไม่จำกัด 40 นาที — Free plan จำกัด
   const maxDurationMin = selectedTier?.anyZoomAccount ? 24 * 60 : 40
   const modalOverLimit = modalDuration !== null && (modalDuration <= 0 || modalDuration > maxDurationMin)
@@ -289,10 +326,8 @@ function Calendar() {
   const modalSeriesPreview = (() => {
     if (!modalForm.recurringEnabled) return null
     const count = parseInt(modalForm.recurringCount, 10)
-    if (!count || count < 2 || !modalForm.startTime) return null
-    const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth()+1).padStart(2,'0')}-${String(selectedDate.getDate()).padStart(2,'0')}`
-    const base = new Date(`${dateStr}T${modalForm.startTime}:00+07:00`)
-    if (isNaN(base)) return null
+    if (!count || count < 2 || !modalRange) return null
+    const base = modalRange.start
     const intervalMs = (modalForm.recurringFreq === 'daily' ? 1 : 7) * 24 * 60 * 60 * 1000
     const last = new Date(base.getTime() + (count - 1) * intervalMs)
     const fmt = d => d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Bangkok' })
@@ -309,11 +344,33 @@ function Calendar() {
     <div style={s.root}>
       <Navbar />
 
-      {user && user.has_calendar === false && (
+      {isGuest && (
         <div style={s.calendarBanner}>
-          เพื่อให้ระบบเพิ่มการจองลง Google Calendar + เก็บข้อมูลการประชุมใน Google Drive ของคุณอัตโนมัติ
-          กรุณา <strong>ออกจากระบบและ login ใหม่</strong>
-          เพื่ออนุญาตสิทธิ์ Calendar + Drive (ครั้งเดียว)
+          คุณกำลังดูปฏิทินในฐานะผู้เยี่ยมชม หากต้องการจองห้องประชุม กรุณา{' '}
+          <button style={s.bannerLink} onClick={() => navigate('/login')}>เข้าสู่ระบบ</button>
+        </div>
+      )}
+      {user?.needs_ku_profile && (
+        <div style={s.calendarBanner}>
+          กรุณายืนยันตัวตนด้วย KU ALL-Login หนึ่งครั้งก่อนจองห้องประชุม{' '}
+          <button style={s.bannerLink} onClick={() => { window.location.href = `${API_BASE}/auth/kulogin` }}>
+            เข้าสู่ระบบด้วย KU ALL-Login
+          </button>
+        </div>
+      )}
+      {user && !user.needs_ku_profile && user.has_calendar === false && (
+        <div style={s.calendarBanner}>
+          เชื่อมต่อบัญชี Google @ku.th เพื่อให้ระบบเพิ่มการจองลง Google Calendar และเก็บไฟล์บันทึกการประชุมใน Google Drive ของคุณ{' '}
+          <button
+            style={s.bannerLink}
+            onClick={() => {
+              api.post('/auth/google/link')
+                .then(res => { window.location.href = res.data.url })
+                .catch(() => navigate('/login?error=need_kulogin'))
+            }}
+          >
+            อนุญาตสิทธิ์ Calendar และ Drive
+          </button>
         </div>
       )}
       <div style={{ ...s.body, flexDirection: isMobile ? 'column' : 'row' }}>
@@ -343,15 +400,58 @@ function Calendar() {
               className="ku-arrow"
               onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth()-1, 1))}
             >‹</button>
-            <span style={s.monthLabel}>
+            <button
+              style={s.monthLabelBtn}
+              className="ku-month-label"
+              onClick={() => { setPickerYear(currentDate.getFullYear()); setPickerOpen(o => !o) }}
+              aria-expanded={pickerOpen}
+              title="เลือกเดือนและปี"
+            >
               {MONTHS[currentDate.getMonth()]} <span style={s.year}>{currentDate.getFullYear() + 543}</span>
-            </span>
+              <span style={s.caret}>▾</span>
+            </button>
             <button
               style={s.arrow}
               className="ku-arrow"
               onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth()+1, 1))}
             >›</button>
           </div>
+
+          {pickerOpen && (
+            <div style={s.picker}>
+              <div style={s.pickerYearRow}>
+                <button style={s.arrow} className="ku-arrow" onClick={() => setPickerYear(y => y - 1)} aria-label="ปีก่อนหน้า">‹</button>
+                <span style={s.monthLabel}>{pickerYear + 543}</span>
+                <button style={s.arrow} className="ku-arrow" onClick={() => setPickerYear(y => y + 1)} aria-label="ปีถัดไป">›</button>
+              </div>
+              <div style={s.pickerGrid}>
+                {MONTHS.map((m, i) => {
+                  const active = pickerYear === currentDate.getFullYear() && i === currentDate.getMonth()
+                  const isThisMonth = pickerYear === today.getFullYear() && i === today.getMonth()
+                  return (
+                    <button
+                      key={m}
+                      style={{ ...s.pickerMonth, ...(isThisMonth ? s.pickerMonthNow : {}), ...(active ? s.pickerMonthActive : {}) }}
+                      className="ku-day-cell"
+                      onClick={() => { setCurrentDate(new Date(pickerYear, i, 1)); setPickerOpen(false) }}
+                    >
+                      {m}
+                    </button>
+                  )
+                })}
+              </div>
+              <button
+                style={s.pickerToday}
+                onClick={() => {
+                  setCurrentDate(new Date(today.getFullYear(), today.getMonth(), 1))
+                  setSelectedDate(today)
+                  setPickerOpen(false)
+                }}
+              >
+                กลับไปวันนี้
+              </button>
+            </div>
+          )}
 
           <div style={s.grid}>
             {DAYS.map((d, i) => (
@@ -508,6 +608,14 @@ function Calendar() {
                   acc[key].count += 1
                   if (slot.is_mine)    acc[key].anyMine = true
                   if (slot.is_co_host) acc[key].anyCoHost = true
+                  // หัวข้อการประชุม — ทุกคนรวมถึง guest เห็น · ช่วงเวลาเดียวกันหลายห้องรวมหัวข้อไว้ด้วยกัน
+                  // ของตัวเองขึ้นก่อน
+                  if (slot.title) {
+                    acc[key].titles = acc[key].titles || []
+                    const label = slot.status === 'pending_approval' ? `${slot.title} · รออนุมัติ` : slot.title
+                    if (slot.is_mine || slot.is_co_host) acc[key].titles.unshift(label)
+                    else acc[key].titles.push(label)
+                  }
                   return acc
                 }, {})).map((slot, i) => {
                   const start = new Date(slot.start_time)
@@ -523,9 +631,13 @@ function Calendar() {
                   const variant = slot.anyMine    ? s.bookedVariantMine
                                 : slot.anyCoHost  ? s.bookedVariantCoHost
                                 : s.bookedVariantOther
-                  const label = slot.anyMine    ? 'Your Reserving'
-                              : slot.anyCoHost  ? 'Your Reserving (Co-Host)'
-                              : 'Reserved'
+                  // feedback Rev.1 ข้อ 10: ต่อท้ายด้วยหัวข้อการประชุม
+                  const baseLabel = slot.anyMine    ? 'Your Reserving'
+                                  : slot.anyCoHost  ? 'Your Reserving (Co-Host)'
+                                  : 'Reserved'
+                  const label = slot.titles?.length
+                    ? `${baseLabel}: ${slot.titles.join(', ')}`
+                    : baseLabel
                   const remaining = totalRooms - slot.count
 
                   return (
@@ -538,6 +650,7 @@ function Calendar() {
                         top: top + 2 + TOP_PAD,
                         height,
                       }}
+                      title={label}
                     >
                       <span style={{
                         ...(isCompact ? s.bookedNameCompact : s.bookedName),
@@ -628,14 +741,37 @@ function Calendar() {
                 />
               </div>
 
+              <TimezoneField
+                fieldStyle={s.field}
+                labelStyle={s.label}
+                inputStyle={s.input}
+                value={modalForm.guestTimezone}
+                onChange={changeModalTimezone}
+                range={modalRange}
+                ruleError={modalRuleError}
+                disabled={modalSuccess}
+              />
+
               <div>
+                {modalForm.guestTimezone && (
+                  <div style={s.field}>
+                    <label style={s.label}>วันที่ตามเขตเวลาที่เลือก <span style={s.req}>*</span></label>
+                    <input
+                      style={s.input}
+                      type="date"
+                      value={modalForm.tzDate}
+                      onChange={e => setModalForm({ ...modalForm, tzDate: e.target.value })}
+                      disabled={modalSuccess}
+                    />
+                  </div>
+                )}
                 <div style={s.field}>
                   <label style={s.label}>เวลาเริ่ม <span style={s.req}>*</span></label>
                   <input
                     style={s.input}
                     type="time"
-                    min="08:00"
-                    max="23:59"
+                    min={modalForm.guestTimezone ? undefined : '08:00'}
+                    max={modalForm.guestTimezone ? undefined : '23:59'}
                     value={modalForm.startTime}
                     onChange={e => setModalForm({ ...modalForm, startTime: e.target.value })}
                     disabled={modalSuccess}
@@ -646,8 +782,8 @@ function Calendar() {
                   <input
                     style={s.input}
                     type="time"
-                    min="08:00"
-                    max="23:59"
+                    min={modalForm.guestTimezone ? undefined : '08:00'}
+                    max={modalForm.guestTimezone ? undefined : '23:59'}
                     value={modalForm.endTime}
                     onChange={e => setModalForm({ ...modalForm, endTime: e.target.value })}
                     disabled={modalSuccess}
@@ -657,7 +793,7 @@ function Calendar() {
 
               <div style={s.field}>
                 <label style={s.label}>
-                  Co-host (อีเมล) <span style={{ color: '#888', fontWeight: 400, fontSize: 11 }}>— ไม่บังคับ</span>
+                  Co-host (อีเมล)
                 </label>
                 <input
                   style={s.input}
@@ -671,9 +807,7 @@ function Calendar() {
               <div style={s.field}>
                 <label style={s.label}>
                   หมายเหตุ / เหตุผลการจอง
-                  {needsApproval
-                    ? <span style={s.req}> *</span>
-                    : <span style={{ color: '#888', fontWeight: 400, fontSize: 11 }}> — ไม่บังคับ</span>}
+                  {needsApproval && <span style={s.req}> *</span>}
                 </label>
                 <textarea
                   style={{ ...s.input, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
@@ -826,6 +960,7 @@ function Calendar() {
       )}
 
       <style>{`
+        .ku-month-label:hover { background: #F0FBF6 !important; }
         .ku-arrow {
           transition: background 0.15s var(--ease), color 0.15s var(--ease);
         }
@@ -878,6 +1013,11 @@ const s = {
     color: '#92400e', padding: '10px 20px',
     fontSize: 13, textAlign: 'center', lineHeight: 1.5,
   },
+  bannerLink: {
+    background: '#028152', color: 'white', border: 'none',
+    borderRadius: 8, padding: '4px 12px', marginLeft: 4,
+    fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+  },
   sidebarToggle: {
     margin: '12px 16px 0',
     padding: '10px 14px',
@@ -897,6 +1037,28 @@ const s = {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
   monthLabel: { fontSize: 16, fontWeight: 600, color: '#03A96B' },
+  monthLabelBtn: {
+    fontSize: 16, fontWeight: 600, color: '#03A96B',
+    background: 'none', border: 'none', borderRadius: 8, padding: '4px 10px',
+    cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'baseline', gap: 2,
+  },
+  caret: { fontSize: 11, color: '#888', marginLeft: 4 },
+  picker: {
+    border: '1px solid #e1e7e1', borderRadius: 12, padding: 12,
+    display: 'flex', flexDirection: 'column', gap: 10, background: '#fafcfa',
+  },
+  pickerYearRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  pickerGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 },
+  pickerMonth: {
+    padding: '8px 0', borderRadius: 8, border: '1px solid transparent',
+    background: 'white', color: '#333', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
+  },
+  pickerMonthNow: { border: '1px solid #B5E8D2' },
+  pickerMonthActive: { background: '#03A96B', color: 'white', fontWeight: 600 },
+  pickerToday: {
+    background: 'none', border: 'none', color: '#028152', fontSize: 13,
+    textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit',
+  },
   year: { color: '#888', fontWeight: 500, fontSize: 14, marginLeft: 4 },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 },
   dayName: { textAlign: 'center', fontSize: 11, fontWeight: 600, padding: '6px 0', textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -1047,7 +1209,7 @@ const s = {
   },
   bookedName: {
     fontSize: 13, fontWeight: 600, color: '#9f1239',
-    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%',
     flexShrink: 0,
   },
   countBadge: {
